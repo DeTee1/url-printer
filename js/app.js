@@ -325,7 +325,49 @@
         }
       }
 
-      // 2. Proxy 1: Jina Reader AI (High quality content & markdown extraction)
+      // 2. Proxy 1: Corsproxy.io (Extracts 100% native HTML tables, diagrams & image grids)
+      try {
+        const cpUrl = `https://corsproxy.io/?${encodeURIComponent(cleanUrl)}`;
+        const res = await fetch(cpUrl);
+        if (res.ok) {
+          const html = await res.text();
+          if (html && html.length > 100 && html.includes('<')) {
+            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
+          }
+        }
+      } catch (e) {
+        console.warn('Corsproxy failed:', e);
+      }
+
+      // 3. Proxy 2: AllOrigins Raw
+      try {
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`;
+        const res = await fetch(proxyUrl);
+        if (res.ok) {
+          const html = await res.text();
+          if (html && html.length > 100 && html.includes('<')) {
+            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
+          }
+        }
+      } catch (e) {
+        console.warn('AllOrigins Raw failed:', e);
+      }
+
+      // 4. Proxy 3: CodeTabs CORS
+      try {
+        const ctUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`;
+        const res = await fetch(ctUrl);
+        if (res.ok) {
+          const html = await res.text();
+          if (html && html.length > 100 && html.includes('<')) {
+            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
+          }
+        }
+      } catch (e) {
+        console.warn('CodeTabs proxy failed:', e);
+      }
+
+      // 5. Proxy 4: Jina Reader AI (For Cloudflare-protected sites)
       try {
         const jinaTarget = cleanUrl.startsWith('http') ? cleanUrl : 'https://' + cleanUrl;
         const jinaUrl = 'https://r.jina.ai/' + jinaTarget;
@@ -340,48 +382,6 @@
         }
       } catch (e) {
         console.warn('Jina proxy failed:', e);
-      }
-
-      // 3. Proxy 2: AllOrigins Raw
-      try {
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`;
-        const res = await fetch(proxyUrl);
-        if (res.ok) {
-          const html = await res.text();
-          if (html && html.length > 50) {
-            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
-          }
-        }
-      } catch (e) {
-        console.warn('AllOrigins Raw failed:', e);
-      }
-
-      // 4. Proxy 3: Corsproxy.io
-      try {
-        const cpUrl = `https://corsproxy.io/?${encodeURIComponent(cleanUrl)}`;
-        const res = await fetch(cpUrl);
-        if (res.ok) {
-          const html = await res.text();
-          if (html && html.length > 50) {
-            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
-          }
-        }
-      } catch (e) {
-        console.warn('Corsproxy failed:', e);
-      }
-
-      // 5. Proxy 4: CodeTabs CORS
-      try {
-        const ctUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`;
-        const res = await fetch(ctUrl);
-        if (res.ok) {
-          const html = await res.text();
-          if (html && html.length > 50) {
-            return this.sanitizeRawHTML(html, cleanUrl, preserveStyles);
-          }
-        }
-      } catch (e) {
-        console.warn('CodeTabs proxy failed:', e);
       }
 
       // 6. Proxy 5: AllOrigins JSON Wrapper
@@ -406,6 +406,7 @@
       let sourceUrl = '';
       let cleanText = rawText || '';
 
+      // 1. YAML frontmatter (--- \n title: ... \n ---)
       const frontmatterMatch = cleanText.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
       if (frontmatterMatch) {
         const yaml = frontmatterMatch[1];
@@ -419,35 +420,92 @@
       const lines = cleanText.split(/\r?\n/);
       const remainingLines = [];
       let inPreamble = true;
+      let hitArticleTitle = false;
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (inPreamble) {
-          if (!line) continue;
-          const titleMatch = line.match(/^Title:\s*(.*)/i);
-          if (titleMatch) {
-            if (!title) title = titleMatch[1].trim();
-            continue;
-          }
-          const urlMatch = line.match(/^(?:URL Source|URL|Source):\s*(.*)/i);
-          if (urlMatch) {
-            if (!sourceUrl) sourceUrl = urlMatch[1].trim();
-            continue;
-          }
-          if (/^(?:Published Time|Publish Date|Date|Author|Author\(s\)|Description):\s*(.*)/i.test(line)) continue;
-          if (/^(?:Markdown Content|HTML Content|Content):\s*$/i.test(line)) {
-            inPreamble = false;
-            continue;
-          }
-          inPreamble = false;
-          remainingLines.push(lines[i]);
-        } else {
-          remainingLines.push(lines[i]);
+      // Extract Title from top metadata lines
+      for (let i = 0; i < Math.min(lines.length, 25); i++) {
+        const l = lines[i].trim();
+        const tMatch = l.match(/^Title:\s*(.*)/i);
+        if (tMatch && !title) {
+          title = tMatch[1].replace(/\s*[-–|].*$/, '').trim();
+        }
+        const uMatch = l.match(/^(?:URL Source|URL|Source):\s*(.*)/i);
+        if (uMatch && !sourceUrl) {
+          sourceUrl = uMatch[1].trim();
         }
       }
 
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) {
+          if (hitArticleTitle) remainingLines.push(lines[i]);
+          continue;
+        }
+
+        // Preamble metadata tags
+        if (/^(?:Title|URL Source|URL|Source|Published Time|Publish Date|Date|Author|Author\(s\)|Description|Category|Rubrika|Kategorie):\s*/i.test(line)) {
+          continue;
+        }
+        if (/^(?:Markdown Content|HTML Content|Content):\s*$/i.test(line)) {
+          continue;
+        }
+
+        // Filter out breadcrumb chains
+        if (!hitArticleTitle && (/^\[.*?\]\(.*?\)\s*(\/|>|»|›)\s*\[?.*?\]?/.test(line) || /^(Domů|Home|Úvod)\s*(\/|>|»|›)/i.test(line))) {
+          continue;
+        }
+
+        // Filter out category name lines before heading
+        if (!hitArticleTitle && (/^(?:Popis saxofonu|Vše okolo saxofonu|Výuka|Historie|Knihovna|Rubrika|Kategorie)$/i.test(line) || /^\[(?:Popis saxofonu|Vše okolo saxofonu|Výuka|Historie|Knihovna)\]/i.test(line))) {
+          continue;
+        }
+
+        // Filter out Navigation lists before the first H1 heading
+        if (!hitArticleTitle && (/^[-*]\s*\[.*?\]\(https?:\/\/.*?\)$/.test(line) || /^[-*]\s*\[.*?\]\(#.*?\)$/.test(line))) {
+          continue;
+        }
+
+        // Detect the real article heading
+        if (!hitArticleTitle && (line.startsWith('# ') || (title && line.toLowerCase().includes(title.toLowerCase())))) {
+          hitArticleTitle = true;
+          inPreamble = false;
+          const cleanHeadingText = line.replace(/^#+\s*/, '').replace(/\s*[-–|].*$/, '').trim();
+          title = cleanHeadingText || title;
+          remainingLines.push(`# ${title}`);
+          continue;
+        }
+
+        // Discard anything before the main article heading
+        if (!hitArticleTitle) {
+          if (line.length > 80 && !line.startsWith('[') && !line.startsWith('*') && !line.startsWith('-')) {
+            hitArticleTitle = true;
+            inPreamble = false;
+            remainingLines.push(line);
+          }
+          continue;
+        }
+
+        // Stop completely at post navigation, related articles, or footer widgets
+        if (/^(?:##?\s*)?(?:Navigace pro příspěvek|Navigace|Další články|Související články|Podobné články|Podobné příspěvky|Související příspěvky|Příspěvky|Rubriky|Kategorie|Mohlo by vás zajímat|Komentáře|Diskuze|Sdílet článek|Zásady ochrany|O mně|O autorovi)/i.test(line)) {
+          break;
+        }
+        if (/^\[?(?:Předchozí|Další|Pokračovat).*?\]?\(.*?\)/i.test(line)) {
+          break;
+        }
+        if (/^(?:©\s*\d{4}|Všechna práva vyhrazena|All rights reserved)/i.test(line)) {
+          break;
+        }
+
+        // Skip standalone link-only lines
+        if (/^\[.*?\]\(https?:\/\/.*?\)$/.test(line) && !line.includes(' ')) {
+          continue;
+        }
+
+        remainingLines.push(lines[i]);
+      }
+
       return {
-        title: title,
+        title: title || 'Nová kapitola',
         sourceUrl: sourceUrl,
         cleanText: remainingLines.join('\n')
       };
@@ -473,24 +531,41 @@
 
       this._resolveAllImages(doc, baseUrl);
 
+      // 1. Remove non-content site chrome (headers, footers, sidebars, breadcrumbs, menus, navigation widgets)
       const unwantedSelectors = [
-        'script', 'noscript', 'iframe', 'nav', 'header', 'footer',
+        'script', 'noscript', 'nav', 'header', 'footer',
         '.navbar', '.nav', '.footer', '.header', '.ad', '.ads', '.advertisement',
-        '.cookie-banner', '.cookie-consent', '.popup', '.modal', '.sidebar',
+        '.cookie-banner', '.cookie-consent', '.popup', '.modal', '.sidebar', '.aside',
         '.social-share', '.share-buttons', '.comments', '#comments', '.newsletter-signup',
-        '.mw-jump-link', '.mw-editsection', '.reference', '.reflist', '.hidden', '[aria-hidden="true"]'
+        '.mw-jump-link', '.mw-editsection', '.reference', '.reflist', '.hidden',
+        '.screen-reader-text',
+        '.breadcrumbs', '.breadcrumb', '#breadcrumbs', '.kadence-breadcrumbs', '#kadence-breadcrumbs',
+        '.yoast-breadcrumbs', '.rank-math-breadcrumb', '.schema-breadcrumb',
+        '.menu', '.menu-item', '.site-navigation', '#site-navigation', '.main-navigation', '.sub-menu',
+        '.wp-block-navigation', '.wp-block-pages-list', '.widget_nav_menu', '.site-header', '#masthead',
+        '.site-footer', '#colophon', '.mobile-header', '#mobile-header',
+        '.post-navigation', '.navigation', '.nav-links', '.prev-next', '.pagination', '.nav-previous', '.nav-next',
+        '.entry-meta', '.meta', '.post-meta', '.entry-taxonomies', '.term-links', '.category-links',
+        '.widget', '.widget-area', '.sidebar', '.elementor-widget-sidebar', '.elementor-nav-menu', '.elementor-widget-nav-menu',
+        '.entry-related', '.related-posts', '.related-articles', '.wp-block-latest-posts', '.yarpp-related', '.jp-relatedposts',
+        '.splide', '.splide__track', '.carousel',
+        '.tags-links', '.cat-links', '.post-categories', '.entry-footer', '.post-author', '.author-box'
       ];
 
       unwantedSelectors.forEach(sel => {
         doc.querySelectorAll(sel).forEach(el => el.remove());
       });
 
-      const mainEl = doc.querySelector('article, main, .entry-content, .post-content, .article-content, .mw-parser-output, #content, .content') || doc.body;
+      // 2. Select pure article body container FIRST
+      const mainEl = doc.querySelector('.entry-content, .single-content, .post-content, .article-content, .post_content, .article-body, .story-body, .wysiwyg, .mw-parser-output')
+                  || doc.querySelector('article, main, #content, .content')
+                  || doc.body;
 
+      // Extract clean article title
       let title = '';
-      const h1El = mainEl.querySelector('h1') || doc.querySelector('h1') || doc.querySelector('title');
+      const h1El = doc.querySelector('h1.entry-title, .entry-header h1, h1, title');
       if (h1El) {
-        title = h1El.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '');
+        title = h1El.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').replace(/\s*[-–|].*$/, '').trim();
       }
       if (!title && sourceUrl) {
         try {
@@ -505,6 +580,7 @@
       const cleanContainer = document.createElement('div');
       cleanContainer.className = 'doc-content';
 
+      // Prepend EXACTLY ONE clean H1 at the top
       const titleH1 = document.createElement('h1');
       titleH1.className = 'doc-element doc-h1';
       titleH1.textContent = title;
@@ -514,12 +590,36 @@
       this._flattenDomBlocks(mainEl, flatElements, preserveStyles, baseUrl);
 
       flatElements.forEach(el => {
-        if (el.tagName === 'H1' && el.textContent.trim().toLowerCase() === title.toLowerCase()) {
+        const textContent = el.textContent.trim();
+        const textLower = textContent.toLowerCase();
+        const titleLower = title.toLowerCase();
+
+        // 1. Skip duplicate headings matching the main title
+        if ((el.tagName === 'H1' || el.tagName === 'H2') && (textLower === titleLower || textLower.startsWith(titleLower))) {
           return;
         }
 
-        const textContent = el.textContent.trim();
+        // 2. Skip metadata tags
         if (/^(?:Title|URL Source|Published Time|Markdown Content):\s*/i.test(textContent)) {
+          return;
+        }
+
+        // 3. Skip residual category names, breadcrumbs or author info
+        if (/^(?:Domů|Home|Úvod)\s*(\/|>|»|›)/i.test(textContent)) {
+          return;
+        }
+        if (/^(?:Popis saxofonu|Vše okolo saxofonu|Výuka|Historie|Knihovna|Rubrika|Kategorie)$/i.test(textContent)) {
+          return;
+        }
+
+        // 4. Skip "Navigace pro příspěvek", post navigation, or related articles
+        if (textLower.includes('navigace pro příspěvek') || textLower.includes('navigace pro') || textLower === 'navigace') {
+          return;
+        }
+        if (/^(?:Další články|Související články|Podobné články|Podobné příspěvky|Rubriky|Kategorie|Mohlo by vás zajímat|Komentáře|Diskuze)/i.test(textContent)) {
+          return;
+        }
+        if (/^(?:Předchozí|Další|Pokračovat)$/i.test(textContent)) {
           return;
         }
 
@@ -533,16 +633,158 @@
       };
     }
 
+    static parseMarkdownOrHTML(text, sourceUrl = '', preserveStyles = true) {
+      const stripped = this._stripMetadataPreamble(text);
+      let title = stripped.title;
+      let effectiveSourceUrl = sourceUrl || stripped.sourceUrl;
+      const cleanInput = stripped.cleanText;
+
+      if (cleanInput.includes('<p>') || cleanInput.includes('<div>') || cleanInput.includes('<article>')) {
+        return this.sanitizeRawHTML(cleanInput, effectiveSourceUrl, preserveStyles);
+      }
+
+      const lines = cleanInput.split('\n');
+      let html = '';
+      let inList = false;
+      let listType = 'ul';
+      let hasFirstH1 = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim();
+        if (!line) {
+          if (inList) {
+            html += `</${listType}>\n`;
+            inList = false;
+          }
+          continue;
+        }
+
+        if (/^(?:Title|URL Source|Published Time|Markdown Content):\s*/i.test(line)) {
+          continue;
+        }
+
+        // 1. Markdown Images: ![Alt](url)
+        const imgMatch = line.match(/^!\[(.*?)\]\((https?:\/\/.*?)\)$/);
+        if (imgMatch) {
+          if (inList) {
+            html += `</${listType}>\n`;
+            inList = false;
+          }
+          const altText = this._escapeHTML(imgMatch[1]);
+          const imgSrc = imgMatch[2];
+          html += `
+            <figure class="doc-element" data-block-type="figure">
+              <img src="${imgSrc}" alt="${altText}" class="doc-element" loading="lazy" onerror="this.parentElement.style.display='none'">
+              ${altText ? `<figcaption>${altText}</figcaption>` : ''}
+            </figure>\n`;
+          continue;
+        }
+
+        // 2. Headings H1 to H6
+        if (line.startsWith('# ')) {
+          const headingText = line.substring(2).trim();
+          if (!hasFirstH1) {
+            title = headingText;
+            hasFirstH1 = true;
+            html += `<h1 class="doc-element doc-h1">${this._escapeHTML(headingText)}</h1>\n`;
+          } else {
+            html += `<h2 class="doc-element doc-h2">${this._escapeHTML(headingText)}</h2>\n`;
+          }
+        } else if (line.startsWith('## ')) {
+          const h2Text = line.substring(3).trim();
+          if (/^(?:Navigace pro příspěvek|Navigace|Podobné příspěvky|Související)/i.test(h2Text)) {
+            break;
+          }
+          html += `<h2 class="doc-element doc-h2">${this._escapeHTML(h2Text)}</h2>\n`;
+        } else if (line.startsWith('### ')) {
+          html += `<h3 class="doc-element doc-h3">${this._escapeHTML(line.substring(4).trim())}</h3>\n`;
+        } else if (line.startsWith('#### ')) {
+          html += `<h4 class="doc-element doc-h4">${this._escapeHTML(line.substring(5).trim())}</h4>\n`;
+        } else if (line.startsWith('##### ')) {
+          html += `<h5 class="doc-element doc-h5">${this._escapeHTML(line.substring(6).trim())}</h5>\n`;
+        } else if (line.startsWith('###### ')) {
+          html += `<h6 class="doc-element doc-h6">${this._escapeHTML(line.substring(7).trim())}</h6>\n`;
+        } else if (line.startsWith('> ')) {
+          html += `<blockquote class="doc-element">${this._escapeHTML(line.substring(2).trim())}</blockquote>\n`;
+        } else if (line.startsWith('- ') || line.startsWith('* ')) {
+          if (!inList) {
+            listType = 'ul';
+            html += `<ul class="doc-element">\n`;
+            inList = true;
+          }
+          html += `<li>${this._parseInline(line.substring(2).trim())}</li>\n`;
+        } else if (/^\d+\.\s/.test(line)) {
+          if (!inList) {
+            listType = 'ol';
+            html += `<ol class="doc-element">\n`;
+            inList = true;
+          }
+          const itemText = line.replace(/^\d+\.\s/, '').trim();
+          html += `<li>${this._parseInline(itemText)}</li>\n`;
+        } else {
+          if (inList) {
+            html += `</${listType}>\n`;
+            inList = false;
+          }
+          html += `<p class="doc-element">${this._parseInline(line)}</p>\n`;
+        }
+      }
+
+      if (inList) html += `</${listType}>\n`;
+      if (!title) title = 'Importovaný dokument';
+
+      if (!hasFirstH1 && title) {
+        html = `<h1 class="doc-element doc-h1">${this._escapeHTML(title)}</h1>\n` + html;
+      }
+
+      return {
+        title: title,
+        sourceUrl: effectiveSourceUrl,
+        htmlContent: html
+      };
+    }
+
     static _flattenDomBlocks(node, results, preserveStyles = true, baseUrl = '') {
       if (!node) return;
 
       const tag = node.tagName ? node.tagName.toLowerCase() : '';
       if (!tag) return;
 
-      if (['script', 'style', 'noscript', 'nav', 'footer', 'header', 'iframe'].includes(tag)) {
+      if (['script', 'style', 'noscript', 'nav', 'footer', 'header'].includes(tag)) {
         return;
       }
 
+      // 1. YouTube & Video Embeds (WordPress wp-block-embed, iframes)
+      if (tag === 'iframe' || node.classList?.contains('wp-block-embed') || node.classList?.contains('wp-block-embed-youtube')) {
+        const iframe = tag === 'iframe' ? node : node.querySelector('iframe');
+        let src = iframe ? (iframe.getAttribute('src') || '') : '';
+        const title = iframe ? (iframe.getAttribute('title') || 'Video ukázka') : (node.getAttribute('title') || 'Video ukázka');
+        
+        let videoId = '';
+        if (src.includes('youtube.com/embed/')) {
+          videoId = src.split('youtube.com/embed/')[1]?.split('?')[0];
+        } else if (src.includes('youtu.be/')) {
+          videoId = src.split('youtu.be/')[1]?.split('?')[0];
+        }
+
+        if (videoId || src) {
+          const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : src;
+          const cleanTitle = title.replace(/#\w+/g, '').replace(/&quot;/g, '"').trim() || 'Hudební video ukázka';
+          const videoCard = document.createElement('div');
+          videoCard.className = 'doc-callout doc-callout-video doc-element';
+          videoCard.setAttribute('data-block-type', 'callout');
+          videoCard.setAttribute('data-callout-type', 'video');
+          videoCard.innerHTML = `
+            <div class="doc-callout-header">🎬 Video ukázka: ${this._escapeHTML(cleanTitle)}</div>
+            <p style="margin-bottom: 6px;"><strong>Odkaz na nahrávku:</strong> <a href="${videoUrl}" target="_blank" rel="noopener">${videoUrl}</a></p>
+            ${videoId ? `<div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/${videoId}/hqdefault.jpg" alt="${this._escapeHTML(cleanTitle)}" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>` : ''}
+          `;
+          results.push(videoCard);
+          return;
+        }
+      }
+
+      // 2. Headings H1 - H6
       if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
         const text = node.textContent.trim();
         if (text) {
@@ -554,6 +796,82 @@
         return;
       }
 
+      // 3. Standalone Table element
+      if (tag === 'table') {
+        const tbl = node.cloneNode(true);
+        tbl.className = 'doc-element';
+        tbl.removeAttribute('style');
+
+        // Resolve all image URLs inside table cells
+        tbl.querySelectorAll('img').forEach(img => {
+          let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
+          if (src.startsWith('//')) {
+            src = 'https:' + src;
+          } else if (src && !src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:') && baseUrl) {
+            try {
+              src = new URL(src, baseUrl).href;
+            } catch (e) {}
+          }
+          img.setAttribute('src', src);
+          img.setAttribute('loading', 'lazy');
+          img.setAttribute('onerror', "this.style.display='none'");
+        });
+
+        results.push(tbl);
+        return;
+      }
+
+      // 4. Figures (Images, tables with captions, or embeds)
+      if (tag === 'figure') {
+        const tableInside = node.querySelector('table');
+        if (tableInside) {
+          const tbl = tableInside.cloneNode(true);
+          tbl.className = 'doc-element';
+          tbl.removeAttribute('style');
+          tbl.querySelectorAll('img').forEach(img => {
+            let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
+            if (src.startsWith('//')) {
+              src = 'https:' + src;
+            } else if (src && !src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:') && baseUrl) {
+              try {
+                src = new URL(src, baseUrl).href;
+              } catch (e) {}
+            }
+            img.setAttribute('src', src);
+            img.setAttribute('loading', 'lazy');
+          });
+
+          const figcaption = node.querySelector('figcaption');
+          if (figcaption && figcaption.textContent.trim()) {
+            const figWrapper = document.createElement('figure');
+            figWrapper.className = 'doc-element doc-table-figure';
+            figWrapper.appendChild(tbl);
+            const cap = document.createElement('figcaption');
+            cap.textContent = figcaption.textContent.trim();
+            figWrapper.appendChild(cap);
+            results.push(figWrapper);
+          } else {
+            results.push(tbl);
+          }
+          return;
+        }
+
+        const img = node.querySelector('img');
+        if (img) {
+          const fig = this._createFigureFromImg(img, baseUrl, node.querySelector('figcaption')?.textContent);
+          if (fig) results.push(fig);
+          return;
+        }
+      }
+
+      // 5. Standalone Image tag
+      if (tag === 'img') {
+        const fig = this._createFigureFromImg(node, baseUrl);
+        if (fig) results.push(fig);
+        return;
+      }
+
+      // 6. Paragraphs
       if (tag === 'p') {
         const text = node.textContent.trim();
         const img = node.querySelector('img');
@@ -570,15 +888,7 @@
         return;
       }
 
-      if (tag === 'figure' || tag === 'img') {
-        const img = tag === 'img' ? node : node.querySelector('img');
-        if (img) {
-          const fig = this._createFigureFromImg(img, baseUrl, node.querySelector('figcaption')?.textContent);
-          if (fig) results.push(fig);
-        }
-        return;
-      }
-
+      // 7. Lists
       if (tag === 'ul' || tag === 'ol') {
         const list = document.createElement(tag);
         list.className = 'doc-element';
@@ -594,6 +904,7 @@
         return;
       }
 
+      // 8. Blockquotes
       if (tag === 'blockquote') {
         const bq = document.createElement('blockquote');
         bq.className = 'doc-element';
@@ -602,14 +913,7 @@
         return;
       }
 
-      if (tag === 'table') {
-        const tbl = node.cloneNode(true);
-        tbl.className = 'doc-element';
-        tbl.removeAttribute('style');
-        results.push(tbl);
-        return;
-      }
-
+      // 9. Preformatted text / code
       if (tag === 'pre') {
         const pre = document.createElement('pre');
         pre.className = 'doc-element';
@@ -618,6 +922,7 @@
         return;
       }
 
+      // 10. Horizontal rule
       if (tag === 'hr') {
         const hr = document.createElement('hr');
         hr.className = 'doc-element';
@@ -625,6 +930,7 @@
         return;
       }
 
+      // 11. Container elements (div, section, article, columns) -> Recurse through all children
       const children = Array.from(node.children);
       if (children.length > 0) {
         children.forEach(child => {
@@ -774,7 +1080,94 @@
           continue;
         }
 
-        // 1. Markdown Images: ![Alt](url)
+        // 1. Markdown Multi-Image Gallery Table (Unified 3x3 Grid with Clean Separate Text Cells)
+        const multiImgMatches = [...line.matchAll(/!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g)];
+        if (multiImgMatches.length > 1) {
+          if (inList) {
+            html += `</${listType}>\n`;
+            inList = false;
+          }
+
+          let tableRowsHtml = '';
+
+          while (i < lines.length) {
+            const currentLine = lines[i].trim();
+            const rowImgMatches = [...currentLine.matchAll(/!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g)];
+            if (rowImgMatches.length === 0) {
+              break;
+            }
+
+            // 1. Image Row
+            tableRowsHtml += '    <tr>\n';
+            rowImgMatches.forEach(m => {
+              const alt = this._escapeHTML(m[1].replace(/^Image\s*\d+:\s*/i, '').trim());
+              const src = m[2];
+              tableRowsHtml += `      <td style="text-align: center; vertical-align: bottom; padding: 8px 6px; background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1);">
+        <img src="${src}" alt="${alt}" class="doc-table-img doc-element" loading="lazy" style="max-height: 120px; object-fit: contain; margin: 0 auto; display: block;" onerror="this.parentElement.style.display='none'">
+      </td>\n`;
+            });
+            tableRowsHtml += '    </tr>\n';
+
+            // 2. Text Label Row
+            if (i + 1 < lines.length && !lines[i + 1].trim().startsWith('!') && !lines[i + 1].trim().startsWith('#')) {
+              i++;
+              tableRowsHtml += '    <tr>\n';
+              rowImgMatches.forEach(m => {
+                let cellName = m[1].replace(/^Image\s*\d+:\s*/i, '').trim();
+                const lower = cellName.toLowerCase();
+                if (lower.startsWith('sopranino') && lower.includes('zahnut')) {
+                  cellName = 'sopranino saxofon (zahnutý)';
+                } else if (lower.startsWith('sopranino')) {
+                  cellName = 'sopranino saxofon';
+                } else if (lower.startsWith('sopran') && lower.includes('zahnut')) {
+                  cellName = 'sopran saxofon (zahnutý)';
+                } else if (lower.startsWith('sopran')) {
+                  cellName = 'sopran saxofon';
+                } else if (lower.startsWith('alt')) {
+                  cellName = 'alt saxofon';
+                } else if (lower.startsWith('tenor')) {
+                  cellName = 'tenor saxofon';
+                } else if (lower.startsWith('baryton')) {
+                  cellName = 'baryton saxofon';
+                } else if (lower.startsWith('bas')) {
+                  cellName = 'bas saxofon';
+                } else if (lower.startsWith('kontrabas')) {
+                  cellName = 'kontrabas saxofon';
+                }
+
+                tableRowsHtml += `      <td style="text-align: center; vertical-align: top; padding: 6px; font-size: 8.5pt; font-weight: 600; color: var(--doc-headings, #1e293b); background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1);">
+        ${this._escapeHTML(cellName)}
+      </td>\n`;
+              });
+              tableRowsHtml += '    </tr>\n';
+            }
+
+            if (i + 1 < lines.length && [...lines[i + 1].trim().matchAll(/!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g)].length > 1) {
+              i++;
+            } else {
+              break;
+            }
+          }
+
+          let figcaptionText = '';
+          if (i + 1 < lines.length && /^Obrázek převzat/i.test(lines[i + 1].trim())) {
+            figcaptionText = lines[i + 1].trim();
+            i++;
+          }
+
+          let fullTableHtml = `<figure class="doc-element doc-table-figure" style="margin: 0.85em 0;">
+  <table class="doc-element doc-image-table" style="width: 100%; border-collapse: collapse; background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1); box-shadow: none;">
+    <tbody>
+${tableRowsHtml}
+    </tbody>
+  </table>
+  ${figcaptionText ? `<figcaption style="font-size: 7.5pt; color: #64748b; text-align: center; margin-top: 6px;">${this._escapeHTML(figcaptionText)}</figcaption>` : ''}
+</figure>\n`;
+
+          html += fullTableHtml;
+          continue;
+        }
+
         const imgMatch = line.match(/^!\[(.*?)\]\((https?:\/\/.*?)\)$/);
         if (imgMatch) {
           if (inList) {
@@ -791,14 +1184,94 @@
           continue;
         }
 
-        // 2. Headings H1 to H6
+        // 2. Markdown Tables: | Header 1 | Header 2 |
+        if ((line.startsWith('|') || (line.includes('|') && line.endsWith('|'))) ||
+            (i + 1 < lines.length && /^\s*\|?\s*[-:]+[-| :]+\s*\|?\s*$/.test(lines[i + 1].trim()))) {
+          if (inList) {
+            html += `</${listType}>\n`;
+            inList = false;
+          }
+
+          let tableHtml = '<table class="doc-element">\n';
+          let isHeader = true;
+          let hasTbody = false;
+
+          while (i < lines.length) {
+            const tableLine = lines[i].trim();
+            if (!tableLine || (!tableLine.includes('|') && !/^\s*[-:]+[-| :]+\s*$/.test(tableLine))) {
+              i--;
+              break;
+            }
+
+            // Separator row (e.g. |---|:---|---:)
+            if (/^\s*\|?\s*[-:]+[-| :]+\s*\|?\s*$/.test(tableLine)) {
+              if (isHeader) {
+                isHeader = false;
+                tableHtml += '  </thead>\n  <tbody>\n';
+                hasTbody = true;
+              }
+              i++;
+              continue;
+            }
+
+            let rawCells = tableLine.split('|');
+            if (tableLine.startsWith('|')) rawCells.shift();
+            if (tableLine.endsWith('|')) rawCells.pop();
+            const cells = rawCells.map(c => c.trim());
+
+            if (isHeader) {
+              tableHtml += '  <thead>\n    <tr>\n';
+              cells.forEach(cell => {
+                tableHtml += `      <th>${this._parseInline(cell)}</th>\n`;
+              });
+              tableHtml += '    </tr>\n';
+
+              if (i + 1 < lines.length && !/^\s*\|?\s*[-:]+[-| :]+\s*\|?\s*$/.test(lines[i + 1].trim())) {
+                isHeader = false;
+                tableHtml += '  </thead>\n  <tbody>\n';
+                hasTbody = true;
+              }
+            } else {
+              if (!hasTbody) {
+                tableHtml += '  <tbody>\n';
+                hasTbody = true;
+              }
+              tableHtml += '    <tr>\n';
+              cells.forEach(cell => {
+                tableHtml += `      <td>${this._parseInline(cell)}</td>\n`;
+              });
+              tableHtml += '    </tr>\n';
+            }
+
+            i++;
+          }
+
+          if (hasTbody) {
+            tableHtml += '  </tbody>\n';
+          } else if (isHeader) {
+            tableHtml += '  </thead>\n';
+          }
+          tableHtml += '</table>\n';
+          html += tableHtml;
+          continue;
+        }
+
+        // 3. Headings H1 to H6
         if (line.startsWith('# ')) {
           const headingText = line.substring(2).trim();
-          if (!title) title = headingText;
-          hasFirstH1 = true;
-          html += `<h1 class="doc-element doc-h1">${this._escapeHTML(headingText)}</h1>\n`;
+          if (!hasFirstH1) {
+            title = headingText;
+            hasFirstH1 = true;
+            html += `<h1 class="doc-element doc-h1">${this._escapeHTML(headingText)}</h1>\n`;
+          } else {
+            html += `<h2 class="doc-element doc-h2">${this._escapeHTML(headingText)}</h2>\n`;
+          }
         } else if (line.startsWith('## ')) {
-          html += `<h2 class="doc-element doc-h2">${this._escapeHTML(line.substring(3).trim())}</h2>\n`;
+          const h2Text = line.substring(3).trim();
+          if (/^(?:Navigace pro příspěvek|Navigace|Podobné příspěvky|Související)/i.test(h2Text)) {
+            break;
+          }
+          html += `<h2 class="doc-element doc-h2">${this._escapeHTML(h2Text)}</h2>\n`;
         } else if (line.startsWith('### ')) {
           html += `<h3 class="doc-element doc-h3">${this._escapeHTML(line.substring(4).trim())}</h3>\n`;
         } else if (line.startsWith('#### ')) {
@@ -893,9 +1366,13 @@
     }
 
     static _parseInline(str) {
-      let s = this._escapeHTML(str);
-      s = s.replace(/!\[(.*?)\]\((https?:\/\/.*?)\)/g, '<img src="$2" alt="$1" class="doc-element" loading="lazy">');
-      s = s.replace(/\[(.*?)\]\((https?:\/\/.*?)\)/g, '<a href="$2" target="_blank">$1</a>');
+      let s = str || '';
+      // Linked images [![alt](img_url)](link_url)
+      s = s.replace(/\[!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)\]\((https?:\/\/[^\s\)]+)\)/g, '<img src="$2" alt="$1" class="doc-table-img doc-element" loading="lazy">');
+      // Direct images ![alt](img_url)
+      s = s.replace(/!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g, '<img src="$2" alt="$1" class="doc-table-img doc-element" loading="lazy">');
+      // Standard links [text](url)
+      s = s.replace(/\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
       s = s.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
       s = s.replace(/\*(.*?)\*/g, '<em>$1</em>');
       s = s.replace(/`(.*?)`/g, '<code>$1</code>');
@@ -914,6 +1391,110 @@
 
     static getSampleArticles() {
       return [
+        {
+          id: 'sax-types-sample',
+          title: 'Typy saxofonu – popis, tabulka a transpozice',
+          sourceUrl: 'https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/',
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Typy saxofonu</h1>
+            <p class="doc-element lead-paragraph">Saxovým záměrem bylo vytvoření celé rodiny saxofonů od sopraninového až po subkontrabasový. Dnes sice tyto nástroje existují, avšak běžnými se staly pouze sopránový (v ladění B), altový (in Es), tenorový (in B) a barytonový (in Es). Tyto nástroje jsou v ladění původně určeném pro vojenské orchestry. Sax sice navrhnul a postavil i nástroje v ladění C (soprán, tenor) a F (alt, baryton) pro využití v symfonickém orchestru, avšak ty se neujaly.</p>
+            
+            <p class="doc-element">Psaný rozsah pro všechny typy je od malého hes po f (fis)3. Fis3 je v závorce, neboť ne každý saxofon je s horní fis klapkou. Znějící rozsah je pak u sopránového saxofonu as – e (es)3, altového des – a (as)2, tenorového As – e (es)2 a barytonového saxofonu Des – a (as)1.</p>
+
+            <figure class="doc-element doc-table-figure" data-block-type="figure">
+              <table class="doc-element doc-image-table" style="width: 100%; border-collapse: collapse; background: #ffffff;">
+                <tbody>
+                  <tr>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image001.gif" alt="Sopranino sax." style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image002.gif" alt="Sopranino zahnutý" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image003.gif" alt="Soprán sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                  </tr>
+                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f8fafc);">
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">sopranino saxofon</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">sopranino saxofon (zahnutý)</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">soprán saxofon</td>
+                  </tr>
+                  <tr>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image004.gif" alt="Soprán zahnutý" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image005.gif" alt="Alt sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image006.gif" alt="Tenor sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                  </tr>
+                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f8fafc);">
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">soprán saxofon (zahnutý)</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">alt saxofon</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">tenor saxofon</td>
+                  </tr>
+                  <tr>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image007.gif" alt="Baryton sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image008.gif" alt="Bas sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image009.gif" alt="Kontrabas sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
+                  </tr>
+                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f8fafc);">
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">baryton saxofon</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">bas saxofon</td>
+                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">kontrabas saxofon</td>
+                  </tr>
+                </tbody>
+              </table>
+              <figcaption style="font-size: 7.5pt; color: #64748b; text-align: center; margin-top: 4px;">Obrázek převzat ze zaniklých stránek saxik.com</figcaption>
+            </figure>
+
+            <h2 class="doc-element doc-h2">Rozsah a transpozice nejčastěji používaných saxofonů</h2>
+            <figure class="doc-element" data-block-type="figure">
+              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Rozsah-a-transpozice-saxu.svg" alt="Rozsah a transpozice saxofonů" class="doc-element" loading="lazy">
+              <figcaption>Přehled rozsahu a transpozice hlavních typů saxofonů</figcaption>
+            </figure>
+
+            <h2 class="doc-element doc-h2">Stupnice C dur na saxofonu a její transpozice do znějící tóniny</h2>
+            <figure class="doc-element" data-block-type="figure">
+              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Sopran-sax.svg" alt="Transpozice C dur Soprán sax" class="doc-element" loading="lazy">
+              <figcaption>Transpozice C dur – Soprán saxofon (in B)</figcaption>
+            </figure>
+
+            <figure class="doc-element" data-block-type="figure">
+              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Alt-sax.svg" alt="Transpozice C dur Alt sax" class="doc-element" loading="lazy">
+              <figcaption>Transpozice C dur – Alt saxofon (in Es)</figcaption>
+            </figure>
+
+            <figure class="doc-element" data-block-type="figure">
+              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Tenor-sax.svg" alt="Transpozice C dur Tenor sax" class="doc-element" loading="lazy">
+              <figcaption>Transpozice C dur – Tenor saxofon (in B)</figcaption>
+            </figure>
+
+            <figure class="doc-element" data-block-type="figure">
+              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Baryton-sax.svg" alt="Transpozice C dur Baryton sax" class="doc-element" loading="lazy">
+              <figcaption>Transpozice C dur – Baryton saxofon (in Es)</figcaption>
+            </figure>
+
+            <h2 class="doc-element doc-h2">Soprán, sopranino a soprillo saxofon</h2>
+            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
+              <div class="doc-callout-header">🎬 Video ukázka: Vivaldi – Čtvero ročních dob: Jaro (Soprillo saxofon)</div>
+              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=NRf21NQ1btk" target="_blank" rel="noopener">https://www.youtube.com/watch?v=NRf21NQ1btk</a></p>
+              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/NRf21NQ1btk/hqdefault.jpg" alt="Vivaldi La Primavera soprillo" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
+            </div>
+
+            <h2 class="doc-element doc-h2">Saxofonový orchestr – sopran, alt, tenor, baryton, bass a kontrabas tubax</h2>
+            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
+              <div class="doc-callout-header">🎬 Video ukázka: Mi-Bemol Saxophone Ensemble – Dvořák Novosvětská symfonie č. 9</div>
+              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=4FiaRL1Kdnc" target="_blank" rel="noopener">https://www.youtube.com/watch?v=4FiaRL1Kdnc</a></p>
+              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/4FiaRL1Kdnc/hqdefault.jpg" alt="Mi-Bemol Saxophone Ensemble" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
+            </div>
+
+            <h2 class="doc-element doc-h2">Kontrabas saxofon a tubax</h2>
+            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
+              <div class="doc-callout-header">🎬 Video ukázka: Giant Contrabass Saxophone Duet</div>
+              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=VabhcbtK2Cg" target="_blank" rel="noopener">https://www.youtube.com/watch?v=VabhcbtK2Cg</a></p>
+              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/VabhcbtK2Cg/hqdefault.jpg" alt="GIANT Contrabass Saxophone Duet" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
+            </div>
+
+            <h2 class="doc-element doc-h2">Neobvyklé a unikátní saxofony</h2>
+            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
+              <div class="doc-callout-header">🎬 Video ukázka: Unheard of Instruments in the Saxophone Family</div>
+              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=p-b6I1ihh2s" target="_blank" rel="noopener">https://www.youtube.com/watch?v=p-b6I1ihh2s</a></p>
+              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/p-b6I1ihh2s/hqdefault.jpg" alt="Unheard of Instruments in Saxophone Family" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
+            </div>
+          `
+        },
         {
           id: 'physics-sample',
           title: 'Kvantová fyzika: Princip neurčitosti a vlnově-korpuskulární dualismus',
@@ -1170,6 +1751,13 @@
         QRGenerator.extractAndCreateQRCards(sandbox);
       }
 
+      Array.from(sandbox.children).forEach((child, idx) => {
+        if (!child.getAttribute('data-block-id')) {
+          child.setAttribute('data-block-id', 'blk_' + idx);
+        }
+        child.classList.add('doc-element');
+      });
+
       let elements = Array.from(sandbox.children);
 
       // TOC handling
@@ -1177,6 +1765,7 @@
         const dummyTOC = document.createElement('div');
         dummyTOC.className = 'doc-toc-wrapper doc-element';
         dummyTOC.setAttribute('data-block-type', 'toc');
+        dummyTOC.setAttribute('data-block-id', 'blk_toc');
         dummyTOC.innerHTML = '<div class="doc-toc-title"><span>📑 Obsah dokumentu</span></div><div class="toc-placeholder" style="font-size: 8.5pt; color: var(--doc-text-muted);">Sestavuji obsah...</div>';
 
         if (this.config.tocPosition === 'standalone-page') {
@@ -1216,6 +1805,9 @@
         const cloned = el.cloneNode(true);
         cloned.setAttribute('contenteditable', 'true');
         cloned.setAttribute('spellcheck', 'false');
+        if (el.getAttribute('data-block-id')) {
+          cloned.setAttribute('data-block-id', el.getAttribute('data-block-id'));
+        }
 
         const isManualBreak = el.classList.contains('doc-page-break') || el.getAttribute('data-break-before') === 'true';
 
@@ -1239,6 +1831,22 @@
         const headingNearBottom = isHeading && (lastChildRect.bottom + 45 > bodyRect.bottom);
 
         if ((exceeds || headingNearBottom) && currentSheetBody.children.length > 1) {
+          // If it is a paragraph or text block that overflows, split words across the page break!
+          if (exceeds && (cloned.tagName === 'P' || cloned.tagName === 'BLOCKQUOTE' || (cloned.tagName === 'DIV' && !cloned.classList.contains('doc-callout')))) {
+            const continuationEl = this._splitParagraphAcrossPages(cloned, currentSheetBody);
+            if (continuationEl) {
+              pageCount++;
+              currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter);
+              currentSheetBody = currentSheet.querySelector('.sheet-body');
+              this.viewport.appendChild(currentSheet);
+              this.sheets.push(currentSheet);
+
+              // Put the continuation element as the next element to paginate
+              elements.splice(i + 1, 0, continuationEl);
+              continue;
+            }
+          }
+
           cloned.remove();
 
           pageCount++;
@@ -1254,6 +1862,27 @@
       document.body.removeChild(sandbox);
       this._updatePageNumbers(pageCount);
 
+      // Listen to image load events to automatically repaginate once real image heights are known
+      const allImgs = Array.from(this.viewport.querySelectorAll('img'));
+      const pendingImgs = allImgs.filter(img => !img.complete || img.naturalHeight === 0);
+      if (pendingImgs.length > 0 && !this._imgLoadListenerAttached) {
+        this._imgLoadListenerAttached = true;
+        let loaded = 0;
+        const onImgReady = () => {
+          loaded++;
+          if (loaded === pendingImgs.length) {
+            this._imgLoadListenerAttached = false;
+            if (window.app && typeof window.app.repaginate === 'function') {
+              window.app.repaginate();
+            }
+          }
+        };
+        pendingImgs.forEach(img => {
+          img.addEventListener('load', onImgReady, { once: true });
+          img.addEventListener('error', onImgReady, { once: true });
+        });
+      }
+
       if (this.config.enableAutoTOC) {
         const tocContainer = this.viewport.querySelector('.doc-toc-wrapper');
         if (tocContainer) {
@@ -1268,6 +1897,58 @@
         sheetCount: this.sheets.length,
         sheets: this.sheets
       };
+    }
+
+    _splitParagraphAcrossPages(pElement, currentSheetBody) {
+      const fullText = pElement.textContent.trim();
+      const words = fullText.split(/\s+/);
+      if (words.length < 8) return null; // Too short to split safely without orphans/widows
+
+      const bodyRect = currentSheetBody.getBoundingClientRect();
+      const pTop = pElement.getBoundingClientRect().top;
+      const availableHeight = bodyRect.bottom - pTop;
+
+      // Need at least 25px available for ~2 lines of text
+      if (availableHeight < 25) return null;
+
+      // Binary search for maximum words that fit within current sheet bottom
+      let low = 3;
+      let high = words.length - 3;
+      let bestFit = -1;
+
+      const originalHtml = pElement.innerHTML;
+
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        pElement.textContent = words.slice(0, mid).join(' ');
+        const testRect = pElement.getBoundingClientRect();
+
+        if (testRect.bottom <= bodyRect.bottom + 1) {
+          bestFit = mid;
+          low = mid + 1; // Try to fit more words
+        } else {
+          high = mid - 1; // Exceeds bottom, reduce word count
+        }
+      }
+
+      // Check typographic constraints: at least 4 words on page 1, and at least 3 words on page 2
+      if (bestFit >= 4 && (words.length - bestFit) >= 3) {
+        const firstPart = words.slice(0, bestFit).join(' ');
+        const secondPart = words.slice(bestFit).join(' ');
+
+        pElement.textContent = firstPart;
+
+        const contElement = document.createElement(pElement.tagName.toLowerCase());
+        contElement.className = pElement.className;
+        contElement.setAttribute('contenteditable', 'true');
+        contElement.setAttribute('spellcheck', 'false');
+        contElement.textContent = secondPart;
+        return contElement;
+      }
+
+      // If cannot split cleanly, restore original HTML
+      pElement.innerHTML = originalHtml;
+      return null;
     }
 
     _createEmptySheet(pageNumber, widthMm, heightMm, activeChapter) {
@@ -1372,6 +2053,7 @@
       this.container = panelContainer;
       this.onBlockModified = onBlockModified || (() => {});
       this.selectedElement = null;
+      this.selectedBlockId = null;
       this._initUI();
     }
 
@@ -1416,8 +2098,9 @@
                 <button class="btn btn-secondary" id="insp-img-toggle-border">Rámeček: Přepnout</button>
                 <button class="btn btn-secondary" id="insp-img-toggle-shadow">Stín: Přepnout</button>
               </div>
-              <div class="control-grid-2" style="margin-top: 4px;">
+              <div class="control-grid-3" style="margin-top: 4px;">
                 <button class="btn btn-secondary" id="insp-img-w100">100% Šířka</button>
+                <button class="btn btn-secondary" id="insp-img-w75">75% Šířka</button>
                 <button class="btn btn-secondary" id="insp-img-w50">50% Šířka</button>
               </div>
             </div>
@@ -1434,11 +2117,18 @@
             <div class="control-group">
               <label class="control-label">Zalomení strany (Page Break)</label>
               <button class="btn btn-secondary" id="insp-toggle-break" style="width: 100%; justify-content: flex-start;">
-                <span>✂️ Tvrzené zalomení před blokem</span>
+                <span id="insp-break-status">✂️ Tvrzené zalomení před blokem</span>
               </button>
             </div>
 
-            <div class="control-group" style="margin-top: 10px;">
+            <div class="control-group" style="margin-top: 4px;">
+              <div class="control-grid-2">
+                <button class="btn btn-secondary" id="insp-move-up" title="Posunout blok nahoru">▲ Posunout nahoru</button>
+                <button class="btn btn-secondary" id="insp-move-down" title="Posunout blok dolů">▼ Posunout dolů</button>
+              </div>
+            </div>
+
+            <div class="control-group" style="margin-top: 4px;">
               <div class="control-grid-2">
                 <button class="btn btn-secondary" id="insp-duplicate-btn">📋 Duplikovat</button>
                 <button class="btn btn-secondary" id="insp-delete-btn" style="color: #f87171; border-color: #7f1d1d;">🗑️ Odstranit</button>
@@ -1478,100 +2168,220 @@
     }
 
     _bindEvents() {
+      // 1. Tag Transform
       const tagSelect = this.container.querySelector('#insp-tag-select');
-      tagSelect.addEventListener('change', () => {
-        if (!this.selectedElement) return;
-        this._transformBlockType(this.selectedElement, tagSelect.value);
-        this.onBlockModified();
-      });
-
-      this.container.querySelector('#insp-align-left').addEventListener('click', () => {
-        if (this.selectedElement) {
-          this.selectedElement.style.textAlign = 'left';
-          this.onBlockModified();
-        }
-      });
-
-      this.container.querySelector('#insp-align-center').addEventListener('click', () => {
-        if (this.selectedElement) {
-          this.selectedElement.style.textAlign = 'center';
-          this.onBlockModified();
-        }
-      });
-
-      this.container.querySelector('#insp-align-justify').addEventListener('click', () => {
-        if (this.selectedElement) {
-          this.selectedElement.style.textAlign = 'justify';
-          this.onBlockModified();
-        }
-      });
-
-      this.container.querySelector('#insp-toggle-break').addEventListener('click', () => {
-        if (this.selectedElement) {
-          const current = this.selectedElement.getAttribute('data-break-before') === 'true';
-          this.selectedElement.setAttribute('data-break-before', (!current).toString());
-          this.selectedElement.style.breakBefore = !current ? 'page' : 'auto';
-          this.onBlockModified();
-        }
-      });
-
-      this.container.querySelector('#insp-duplicate-btn').addEventListener('click', () => {
-        if (this.selectedElement && this.selectedElement.parentNode) {
-          const clone = this.selectedElement.cloneNode(true);
-          this.selectedElement.parentNode.insertBefore(clone, this.selectedElement.nextSibling);
-          this.selectElement(clone);
-          this.onBlockModified();
-        }
-      });
-
-      this.container.querySelector('#insp-delete-btn').addEventListener('click', () => {
-        if (this.selectedElement && this.selectedElement.parentNode) {
-          this.selectedElement.remove();
-          this.deselect();
-          this.onBlockModified();
-        }
-      });
-
-      // Specific image quick adjustments
-      this.container.querySelector('#insp-img-toggle-border')?.addEventListener('click', () => {
-        if (this.selectedElement) {
-          const img = this.selectedElement.querySelector('img') || (this.selectedElement.tagName === 'IMG' ? this.selectedElement : null);
-          if (img) {
-            img.style.border = img.style.border ? '' : '1.5px solid var(--doc-primary)';
-            this.onBlockModified();
+      tagSelect?.addEventListener('change', () => {
+        const newType = tagSelect.value;
+        this.onBlockModified((target, parent) => {
+          if (target) {
+            this._transformMasterBlock(target, newType);
           }
-        }
+        });
+      });
+
+      // 2. Text Alignment
+      this.container.querySelector('#insp-align-left')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) target.style.textAlign = 'left';
+        });
+      });
+
+      this.container.querySelector('#insp-align-center')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) target.style.textAlign = 'center';
+        });
+      });
+
+      this.container.querySelector('#insp-align-justify')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) target.style.textAlign = 'justify';
+        });
+      });
+
+      // 3. Page Break Toggle
+      this.container.querySelector('#insp-toggle-break')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) {
+            const current = target.getAttribute('data-break-before') === 'true';
+            const next = !current;
+            target.setAttribute('data-break-before', next.toString());
+            target.style.breakBefore = next ? 'page' : 'auto';
+          }
+        });
+      });
+
+      // 4. Move Up / Down
+      this.container.querySelector('#insp-move-up')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target && target.previousElementSibling) {
+            target.parentNode.insertBefore(target, target.previousElementSibling);
+          }
+        });
+      });
+
+      this.container.querySelector('#insp-move-down')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target && target.nextElementSibling) {
+            target.parentNode.insertBefore(target.nextElementSibling, target);
+          }
+        });
+      });
+
+      // 5. Duplicate
+      this.container.querySelector('#insp-duplicate-btn')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target && target.parentNode) {
+            const clone = target.cloneNode(true);
+            const newId = 'blk_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+            clone.setAttribute('data-block-id', newId);
+            target.parentNode.insertBefore(clone, target.nextSibling);
+            this.selectedBlockId = newId;
+          }
+        });
+      });
+
+      // 6. Delete
+      this.container.querySelector('#insp-delete-btn')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target && target.parentNode) {
+            target.remove();
+            this.deselect();
+          }
+        });
+      });
+
+      // 7. Image Controls
+      this.container.querySelector('#insp-img-toggle-border')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) {
+            const img = target.querySelector('img') || (target.tagName === 'IMG' ? target : null);
+            if (img) {
+              img.style.border = img.style.border ? '' : '1.5px solid var(--doc-primary, #0ea5e9)';
+            }
+          }
+        });
       });
 
       this.container.querySelector('#insp-img-toggle-shadow')?.addEventListener('click', () => {
-        if (this.selectedElement) {
-          const img = this.selectedElement.querySelector('img') || (this.selectedElement.tagName === 'IMG' ? this.selectedElement : null);
-          if (img) {
-            img.style.boxShadow = img.style.boxShadow ? '' : '0 8px 24px rgba(0,0,0,0.2)';
-            this.onBlockModified();
+        this.onBlockModified((target) => {
+          if (target) {
+            const img = target.querySelector('img') || (target.tagName === 'IMG' ? target : null);
+            if (img) {
+              img.style.boxShadow = img.style.boxShadow ? '' : '0 8px 24px rgba(0,0,0,0.25)';
+            }
           }
-        }
+        });
       });
 
       this.container.querySelector('#insp-img-w100')?.addEventListener('click', () => {
-        if (this.selectedElement) {
-          const img = this.selectedElement.querySelector('img') || (this.selectedElement.tagName === 'IMG' ? this.selectedElement : null);
-          if (img) {
-            img.style.maxWidth = '100%';
-            this.onBlockModified();
+        this.onBlockModified((target) => {
+          if (target) {
+            const img = target.querySelector('img') || (target.tagName === 'IMG' ? target : null);
+            if (img) {
+              img.style.maxWidth = '100%';
+              img.style.width = '100%';
+              img.style.height = 'auto';
+              img.style.margin = '0';
+              img.style.display = 'block';
+            }
           }
-        }
+        });
+      });
+
+      this.container.querySelector('#insp-img-w75')?.addEventListener('click', () => {
+        this.onBlockModified((target) => {
+          if (target) {
+            const img = target.querySelector('img') || (target.tagName === 'IMG' ? target : null);
+            if (img) {
+              img.style.maxWidth = '75%';
+              img.style.width = '75%';
+              img.style.margin = '0 auto';
+              img.style.display = 'block';
+            }
+          }
+        });
       });
 
       this.container.querySelector('#insp-img-w50')?.addEventListener('click', () => {
-        if (this.selectedElement) {
-          const img = this.selectedElement.querySelector('img') || (this.selectedElement.tagName === 'IMG' ? this.selectedElement : null);
-          if (img) {
-            img.style.maxWidth = '50%';
-            img.style.margin = '6px auto';
-            this.onBlockModified();
+        this.onBlockModified((target) => {
+          if (target) {
+            const img = target.querySelector('img') || (target.tagName === 'IMG' ? target : null);
+            if (img) {
+              img.style.maxWidth = '50%';
+              img.style.width = '50%';
+              img.style.margin = '0 auto';
+              img.style.display = 'block';
+            }
           }
+        });
+      });
+
+      // 8. Quick Educational Insert Tiles directly inside Inspector
+      this.container.querySelector('#insert-task-tile')?.addEventListener('click', () => {
+        this._insertCustomBlock(`
+          <div class="doc-callout doc-callout-task doc-element" data-block-type="callout" data-callout-type="task">
+            <div class="doc-callout-header">✏️ Samostatný úkol pro studenty</div>
+            <p>Napište zadání úlohy nebo otázku k probrané látce...</p>
+          </div>
+        `);
+      });
+
+      this.container.querySelector('#insert-def-tile')?.addEventListener('click', () => {
+        this._insertCustomBlock(`
+          <div class="doc-callout doc-callout-def doc-element" data-block-type="callout" data-callout-type="def">
+            <div class="doc-callout-header">💡 Definice klíčového pojmu</div>
+            <p>Zde uveďte přesnou definici odborného termínu...</p>
+          </div>
+        `);
+      });
+
+      this.container.querySelector('#insert-notes-tile')?.addEventListener('click', () => {
+        this._insertCustomBlock(`
+          <div class="doc-notes-area doc-element" data-block-type="notes">
+            <div class="doc-notes-title">
+              <span>Linkované řádky pro zápisky a odpovědi</span>
+              <span>Linkovaný sešit (7 mm)</span>
+            </div>
+            <div class="doc-notes-lines"></div>
+          </div>
+        `);
+      });
+
+      this.container.querySelector('#insert-dots-tile')?.addEventListener('click', () => {
+        this._insertCustomBlock(`
+          <div class="doc-notes-area doc-element" data-block-type="notes">
+            <div class="doc-notes-title">
+              <span>Tečkovaná plocha pro nákresy a diagramy</span>
+              <span>Tečkovaný rastr (5 mm)</span>
+            </div>
+            <div class="doc-notes-dots"></div>
+          </div>
+        `);
+      });
+
+      this.container.querySelector('#insert-break-tile')?.addEventListener('click', () => {
+        this._insertCustomBlock(`
+          <div class="doc-page-break doc-element" data-block-type="page-break" data-break-before="true">
+            <span>✂️ Tvrzený zlom stránky (Page Break)</span>
+          </div>
+        `);
+      });
+    }
+
+    _insertCustomBlock(htmlString) {
+      this.onBlockModified((target, parent) => {
+        const template = document.createElement('template');
+        template.innerHTML = htmlString.trim();
+        const newEl = template.content.firstElementChild;
+        const newId = 'blk_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        newEl.setAttribute('data-block-id', newId);
+
+        if (target && target.parentNode) {
+          target.parentNode.insertBefore(newEl, target.nextSibling);
+        } else {
+          parent.appendChild(newEl);
         }
+        this.selectedBlockId = newId;
       });
     }
 
@@ -1585,6 +2395,11 @@
         return;
       }
 
+      // Ensure persistent block ID
+      if (!el.getAttribute('data-block-id')) {
+        el.setAttribute('data-block-id', 'blk_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5));
+      }
+      this.selectedBlockId = el.getAttribute('data-block-id');
       this.selectedElement = el;
       this.selectedElement.classList.add('active-selected');
 
@@ -1597,7 +2412,7 @@
       if (controls) controls.style.display = 'flex';
 
       const tag = el.tagName.toLowerCase();
-      const isImgOrFigure = tag === 'img' || tag === 'figure' || el.querySelector('img');
+      const isImgOrFigure = tag === 'img' || tag === 'figure' || !!el.querySelector('img');
       if (imgOptions) imgOptions.style.display = isImgOrFigure ? 'flex' : 'none';
 
       const tagSelect = this.container.querySelector('#insp-tag-select');
@@ -1614,6 +2429,22 @@
         else if (el.querySelector('.doc-notes-dots')) tagSelect.value = 'notes-dots';
         else tagSelect.value = tag;
       }
+
+      const isBreak = el.getAttribute('data-break-before') === 'true';
+      const statusEl = this.container.querySelector('#insp-break-status');
+      if (statusEl) {
+        statusEl.textContent = isBreak ? '✂️ Zalomení aktivní (Vypnout)' : '✂️ Tvrzené zalomení před blokem';
+      }
+    }
+
+    reselectAfterRepagination(blockId) {
+      if (!blockId) return;
+      const newEl = document.querySelector(`[data-block-id="${blockId}"]`);
+      if (newEl) {
+        this.selectElement(newEl);
+      } else {
+        this.deselect();
+      }
     }
 
     deselect() {
@@ -1621,6 +2452,7 @@
         this.selectedElement.classList.remove('active-selected');
         this.selectedElement = null;
       }
+      this.selectedBlockId = null;
       const emptyMsg = this.container.querySelector('#inspector-empty');
       const controls = this.container.querySelector('#inspector-controls');
       const badge = this.container.querySelector('#inspector-badge');
@@ -1629,30 +2461,34 @@
       if (badge) badge.textContent = 'PLÁTNO';
     }
 
-    _transformBlockType(el, targetType) {
-      const text = el.textContent.trim() || 'Text bloku';
+    _transformMasterBlock(target, targetType) {
+      const text = target.textContent.trim() || 'Text bloku';
+      const blockId = target.getAttribute('data-block-id') || ('blk_' + Date.now());
 
       if (targetType.startsWith('callout-')) {
         const type = targetType.replace('callout-', '');
         const icons = { task: '✏️ Úkol', def: '💡 Definice', solution: '🔍 Řešení', formula: '📐 Vzorec', warn: '⚠️ Upozornění' };
-        el.className = `doc-callout doc-callout-${type} doc-element`;
-        el.setAttribute('data-block-type', 'callout');
-        el.innerHTML = `<div class="doc-callout-header">${icons[type] || 'Poznámka'}</div><p>${text}</p>`;
+        target.className = `doc-callout doc-callout-${type} doc-element`;
+        target.setAttribute('data-block-type', 'callout');
+        target.setAttribute('data-block-id', blockId);
+        target.innerHTML = `<div class="doc-callout-header">${icons[type] || 'Poznámka'}</div><p>${text}</p>`;
       } else if (targetType === 'notes-lines') {
-        el.className = 'doc-notes-area doc-element';
-        el.setAttribute('data-block-type', 'notes');
-        el.innerHTML = `<div class="doc-notes-title"><span>Linkované řádky pro zápisky (7mm)</span><span>Zápisník</span></div><div class="doc-notes-lines"></div>`;
+        target.className = 'doc-notes-area doc-element';
+        target.setAttribute('data-block-type', 'notes');
+        target.setAttribute('data-block-id', blockId);
+        target.innerHTML = `<div class="doc-notes-title"><span>Linkované řádky pro zápisky (7mm)</span><span>Zápisník</span></div><div class="doc-notes-lines"></div>`;
       } else if (targetType === 'notes-dots') {
-        el.className = 'doc-notes-area doc-element';
-        el.setAttribute('data-block-type', 'notes');
-        el.innerHTML = `<div class="doc-notes-title"><span>Tečkovaná plocha pro schémata (5mm)</span><span>Nákresník</span></div><div class="doc-notes-dots"></div>`;
+        target.className = 'doc-notes-area doc-element';
+        target.setAttribute('data-block-type', 'notes');
+        target.setAttribute('data-block-id', blockId);
+        target.innerHTML = `<div class="doc-notes-title"><span>Tečkovaná plocha pro schémata (5mm)</span><span>Nákresník</span></div><div class="doc-notes-dots"></div>`;
       } else {
         const newEl = document.createElement(targetType);
         newEl.className = `doc-element doc-${targetType}`;
         newEl.setAttribute('contenteditable', 'true');
+        newEl.setAttribute('data-block-id', blockId);
         newEl.innerHTML = text;
-        el.replaceWith(newEl);
-        this.selectElement(newEl);
+        target.replaceWith(newEl);
       }
     }
   }
@@ -1884,7 +2720,7 @@
       this.pagination = new PaginationEngine(document.getElementById('sheet-viewport'));
       this.inspector = new BlockInspector(
         document.getElementById('inspector-panel'),
-        () => this._syncAndRepaginate()
+        (mutatorFn) => this._modifyBlock(mutatorFn)
       );
 
       this.currentZoom = 1.0;
@@ -1901,6 +2737,7 @@
       this._bindTopBar();
       this._bindSidebars();
       this._bindModals();
+      this._initProjectManagement();
       this._bindCanvasInteractions();
       this._bindKeyboardShortcuts();
 
@@ -1991,7 +2828,42 @@
       });
     }
 
+    _modifyBlock(mutatorFn) {
+      const activeChap = this.chapterManager.getActiveChapter();
+      if (!activeChap) return;
+
+      const temp = document.createElement('div');
+      temp.innerHTML = activeChap.htmlContent;
+
+      // Ensure every top-level child in active chapter has data-block-id
+      Array.from(temp.children).forEach((child, idx) => {
+        if (!child.getAttribute('data-block-id')) {
+          child.setAttribute('data-block-id', 'blk_' + idx);
+        }
+        child.classList.remove('active-selected');
+      });
+
+      const selectedBlockId = this.inspector?.selectedBlockId;
+      let target = selectedBlockId ? temp.querySelector(`[data-block-id="${selectedBlockId}"]`) : null;
+
+      if (typeof mutatorFn === 'function') {
+        mutatorFn(target, temp);
+      }
+
+      // Strip active-selected classes before saving
+      temp.querySelectorAll('.active-selected').forEach(el => el.classList.remove('active-selected'));
+
+      activeChap.htmlContent = temp.innerHTML;
+      this.repaginate();
+      this._pushHistoryState();
+
+      if (this.inspector?.selectedBlockId) {
+        this.inspector.reselectAfterRepagination(this.inspector.selectedBlockId);
+      }
+    }
+
     _syncAndRepaginate() {
+      const selectedBlockId = this.inspector?.selectedBlockId;
       const activeChap = this.chapterManager.getActiveChapter();
       if (activeChap) {
         const sheetBodies = document.querySelectorAll('.sheet-body');
@@ -2009,6 +2881,10 @@
       }
       this.repaginate();
       this._pushHistoryState();
+
+      if (selectedBlockId && this.inspector) {
+        this.inspector.reselectAfterRepagination(selectedBlockId);
+      }
     }
 
     repaginate() {
@@ -2426,10 +3302,10 @@
       if (!viewport) return;
 
       viewport.addEventListener('click', (e) => {
-        const targetElement = e.target.closest('.doc-element');
-        if (targetElement) {
+        const targetElement = e.target.closest('.sheet-body > *, [data-block-id], .doc-element');
+        if (targetElement && !targetElement.classList.contains('sheet-body') && !targetElement.classList.contains('paper-sheet') && !targetElement.classList.contains('sheet-header') && !targetElement.classList.contains('sheet-footer')) {
           this.inspector.selectElement(targetElement);
-        } else {
+        } else if (!e.target.closest('.inspector-sidebar, .app-sidebar, .app-topbar, .modal-window')) {
           this.inspector.deselect();
         }
       });
@@ -2486,6 +3362,8 @@
             this.chapterManager.addChapter(parsed.title, parsed.htmlContent, urlInput);
             modal.classList.remove('open');
             if (urlInputEl) urlInputEl.value = '';
+            setTimeout(() => this.repaginate(), 100);
+            setTimeout(() => this.repaginate(), 400);
           } catch (err) {
             alert(err.message);
           } finally {
@@ -2497,32 +3375,389 @@
           this.chapterManager.addChapter(parsed.title, parsed.htmlContent);
           modal.classList.remove('open');
           if (textInputEl) textInputEl.value = '';
+          setTimeout(() => this.repaginate(), 100);
+          setTimeout(() => this.repaginate(), 400);
         } else {
           alert('Prosím zadejte URL adresu nebo vložte text kapitoly.');
         }
       });
     }
 
-    _exportProjectJSON() {
-      const project = {
-        version: '1.0',
-        title: 'URL_Printer_Projekt',
-        createdAt: new Date().toISOString(),
-        config: this.pagination.config,
-        chapters: this.chapterManager.chapters
+    // ------------------------------------------------------------------------
+    // PROJECT MANAGEMENT, .URLPRINT LOAD/SAVE & RECENT PROJECTS HISTORY
+    // ------------------------------------------------------------------------
+    _initProjectManagement() {
+      // 1. Topbar & Modal Buttons
+      const btnOpenProjects = document.getElementById('btn-open-projects');
+      const modalProjects = document.getElementById('modal-projects');
+      const modalProjectsClose = document.getElementById('modal-projects-close');
+      const fileInput = document.getElementById('file-input-urlprint');
+      const btnModalLoadFile = document.getElementById('btn-modal-load-file');
+      const btnModalSaveCurrent = document.getElementById('btn-modal-save-current');
+      const btnModalClearHistory = document.getElementById('btn-modal-clear-history');
+
+      btnOpenProjects?.addEventListener('click', () => {
+        this._renderProjectHistory();
+        modalProjects?.classList.add('open');
+      });
+
+      modalProjectsClose?.addEventListener('click', () => {
+        modalProjects?.classList.remove('open');
+      });
+
+      modalProjects?.addEventListener('click', (e) => {
+        if (e.target === modalProjects) modalProjects.classList.remove('open');
+      });
+
+      btnModalLoadFile?.addEventListener('click', () => {
+        fileInput?.click();
+      });
+
+      btnModalSaveCurrent?.addEventListener('click', () => {
+        this._exportProjectJSON();
+      });
+
+      btnModalClearHistory?.addEventListener('click', () => {
+        if (confirm('Opravdu chcete vymazat celou historii dříve uložených projektů?')) {
+          localStorage.removeItem('url_printer_recent_projects');
+          this._renderProjectHistory();
+          this.showToast('Historie projektů byla vymazána.', '🗑️');
+        }
+      });
+
+      fileInput?.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+          this._readAndLoadFile(file);
+          fileInput.value = '';
+        }
+      });
+
+      // 2. Drag & Drop of *.urlprint / *.json anywhere onto Studio
+      const dropOverlay = document.getElementById('drop-zone-overlay');
+      let dragCounter = 0;
+
+      window.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        if (dropOverlay) dropOverlay.classList.add('active');
+      });
+
+      window.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0 && dropOverlay) {
+          dropOverlay.classList.remove('active');
+        }
+      });
+
+      window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+      });
+
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        if (dropOverlay) dropOverlay.classList.remove('active');
+
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0) {
+          const file = files[0];
+          if (file.name.endsWith('.urlprint') || file.name.endsWith('.json') || (file.type && file.type.includes('json'))) {
+            this._readAndLoadFile(file);
+          } else {
+            this.showToast('Prosím přetáhněte platný soubor projektu *.urlprint', '⚠️');
+          }
+        }
+      });
+    }
+
+    _readAndLoadFile(file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const content = event.target?.result;
+          if (content) {
+            this.loadProjectFromJSON(content, file.name);
+          }
+        } catch (err) {
+          alert('Chyba při načítání souboru: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    loadProjectFromJSON(jsonStringOrObject, sourceFileName = '') {
+      try {
+        const project = typeof jsonStringOrObject === 'string' ? JSON.parse(jsonStringOrObject) : jsonStringOrObject;
+        if (!project || !Array.isArray(project.chapters) || project.chapters.length === 0) {
+          throw new Error('Soubor neobsahuje platnou strukturu kapitol projektu *.urlprint.');
+        }
+
+        // 1. Restore Chapters
+        this.chapterManager.chapters = project.chapters;
+        this.chapterManager.activeChapterId = project.activeChapterId || project.chapters[0]?.id || '';
+
+        // 2. Restore Configuration
+        if (project.config) {
+          this.pagination.updateConfig(project.config);
+          this._syncUIControlsWithConfig(project.config);
+        }
+
+        // 3. Render and Repaginate
+        this._renderChapterTree();
+        this.repaginate();
+        this._pushHistoryState();
+
+        // 4. Save to Recent Projects Storage
+        this._saveProjectToRecentHistory(project, sourceFileName);
+
+        // 5. User Feedback
+        const docTitle = project.title || project.chapters[0]?.title || sourceFileName || 'URL Printer Projekt';
+        this.showToast(`Projekt "${docTitle}" byl úspěšně načten!`, '📂');
+
+        const modalProjects = document.getElementById('modal-projects');
+        if (modalProjects) modalProjects.classList.remove('open');
+      } catch (e) {
+        alert('Neplatný formát souboru .urlprint: ' + e.message);
+      }
+    }
+
+    _syncUIControlsWithConfig(cfg) {
+      if (!cfg) return;
+
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined) el.value = val;
+      };
+      const setChk = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined) el.checked = !!val;
       };
 
-      const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+      setVal('sel-paper-format', cfg.format || 'a4');
+      setVal('sel-orientation', cfg.orientation || 'portrait');
+      setVal('sel-columns', cfg.columns || 1);
+      setVal('range-margins', cfg.marginLeft || 20);
+      const marginDisplay = document.getElementById('margin-val-display');
+      if (marginDisplay) marginDisplay.textContent = `${cfg.marginLeft || 20} mm`;
+
+      setChk('chk-show-source-doc', cfg.showSourceInDoc);
+      setChk('chk-show-source-header', cfg.showSourceInHeader);
+      setChk('chk-show-source-footer', cfg.showSourceInFooter !== false);
+
+      setChk('chk-enable-toc', cfg.enableTOC);
+      setVal('sel-toc-position', cfg.tocPosition || 'after-title');
+
+      setChk('chk-enable-header', cfg.enableHeader !== false);
+      setChk('chk-enable-footer', cfg.enableFooter !== false);
+      setVal('input-header-left', cfg.headerLeft || '');
+      setVal('input-header-right', cfg.headerRight || '');
+      setVal('input-footer-left', cfg.footerLeft || '');
+      setVal('sel-page-num-format', cfg.pageNumFormat || 'prefix');
+
+      setVal('sel-img-border', cfg.imgBorder || 'none');
+      setVal('sel-img-shadow', cfg.imgShadow || 'none');
+      setVal('sel-img-radius', cfg.imgRadius || 'sharp');
+      setVal('sel-img-bg', cfg.imgBg || 'none');
+
+      setChk('chk-enable-qr', cfg.enableQR !== false);
+      setVal('sel-media-mode', cfg.mediaMode || 'normal');
+
+      // Update document.body data attributes
+      document.body.setAttribute('data-theme', cfg.theme || 'web-original');
+      document.body.setAttribute('data-font', cfg.font || 'sans');
+      document.body.setAttribute('data-img-border', cfg.imgBorder || 'none');
+      document.body.setAttribute('data-img-shadow', cfg.imgShadow || 'none');
+      document.body.setAttribute('data-img-radius', cfg.imgRadius || 'sharp');
+      document.body.setAttribute('data-img-bg', cfg.imgBg || 'none');
+      document.body.setAttribute('data-media-mode', cfg.mediaMode || 'normal');
+
+      // Update Active Palette Card in UI
+      const paletteCards = document.querySelectorAll('.palette-card');
+      paletteCards.forEach(c => {
+        if (c.getAttribute('data-theme') === (cfg.theme || 'web-original')) {
+          c.classList.add('active');
+        } else {
+          c.classList.remove('active');
+        }
+      });
+    }
+
+    _saveProjectToRecentHistory(project, sourceFileName = '') {
+      try {
+        const title = project.title || project.chapters?.[0]?.title || sourceFileName.replace(/\.urlprint$/i, '') || 'URL Printer Dokument';
+        const historyItem = {
+          id: project.id || 'proj_' + Date.now(),
+          title: title,
+          updatedAt: new Date().toISOString(),
+          chapterCount: project.chapters?.length || 0,
+          sourceUrl: project.chapters?.[0]?.sourceUrl || '',
+          format: project.config?.format || 'a4',
+          theme: project.config?.theme || 'web-original',
+          projectData: project
+        };
+
+        let list = [];
+        try {
+          list = JSON.parse(localStorage.getItem('url_printer_recent_projects') || '[]');
+        } catch (e) { list = []; }
+
+        // Remove if duplicate by title or id
+        list = list.filter(p => p.id !== historyItem.id && p.title !== historyItem.title);
+        list.unshift(historyItem);
+
+        // Keep last 30 projects
+        if (list.length > 30) list = list.slice(0, 30);
+        localStorage.setItem('url_printer_recent_projects', JSON.stringify(list));
+      } catch (e) {
+        console.warn('LocalStorage save error:', e);
+      }
+    }
+
+    _renderProjectHistory() {
+      const container = document.getElementById('project-history-list');
+      if (!container) return;
+      container.innerHTML = '';
+
+      let list = [];
+      try {
+        list = JSON.parse(localStorage.getItem('url_printer_recent_projects') || '[]');
+      } catch (e) { list = []; }
+
+      if (list.length === 0) {
+        container.innerHTML = `
+          <div class="empty-history-state">
+            <div class="empty-history-icon">📂</div>
+            <div style="font-size: 13px; font-weight: 600; color: #e2e8f0;">Zatím nemáte žádné uložené projekty</div>
+            <div style="font-size: 11px; max-width: 320px; line-height: 1.4;">Jakmile importujete webovou stránku nebo uložíte projekt, objeví se zde pro rychlé opětovné otevření.</div>
+            <div style="display: flex; gap: 8px; margin-top: 8px;">
+              <button class="btn btn-primary" onclick="document.getElementById('file-input-urlprint').click()">📂 Otevřít soubor .urlprint</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      list.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'project-card';
+
+        const dateObj = new Date(item.updatedAt);
+        const formattedDate = dateObj.toLocaleDateString('cs-CZ', {
+          day: 'numeric',
+          month: 'numeric',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        const formatLabel = (item.format || 'a4').toUpperCase();
+        const themeLabel = item.theme === 'web-original' ? '🌐 Styl webu' : (item.theme || 'Standard');
+
+        card.innerHTML = `
+          <div class="project-card-info">
+            <div class="project-card-title-row">
+              <span class="project-card-title">${this._escapeHTML(item.title)}</span>
+              <span class="project-card-badge">${formatLabel}</span>
+              <span class="project-card-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(52, 211, 153, 0.3);">${themeLabel}</span>
+            </div>
+            <div class="project-card-meta">
+              <span>🕒 ${formattedDate}</span>
+              <span>📑 ${item.chapterCount} ${item.chapterCount === 1 ? 'kapitola' : (item.chapterCount < 5 ? 'kapitoly' : 'kapitol')}</span>
+              ${item.sourceUrl ? `<span class="project-card-url" title="${this._escapeHTML(item.sourceUrl)}">🔗 ${this._escapeHTML(item.sourceUrl)}</span>` : ''}
+            </div>
+          </div>
+          <div class="project-card-actions">
+            <button class="btn-card-action btn-card-open" title="Otevřít a načíst tento projekt do studia">
+              <span>🟢 Otevřít</span>
+            </button>
+            <button class="btn-card-action btn-card-export" title="Stáhnout jako soubor .urlprint">
+              <span>💾</span>
+            </button>
+            <button class="btn-card-action btn-card-delete" title="Odstranit z historie">
+              <span>✕</span>
+            </button>
+          </div>
+        `;
+
+        // Open Button
+        card.querySelector('.btn-card-open').addEventListener('click', () => {
+          this.loadProjectFromJSON(item.projectData, item.title);
+        });
+
+        // Export Button
+        card.querySelector('.btn-card-export').addEventListener('click', () => {
+          this._downloadProjectBlob(item.projectData, item.title);
+        });
+
+        // Delete Button
+        card.querySelector('.btn-card-delete').addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (confirm(`Odstranit projekt "${item.title}" z historie?`)) {
+            let updatedList = [];
+            try {
+              updatedList = JSON.parse(localStorage.getItem('url_printer_recent_projects') || '[]');
+            } catch (err) {}
+            updatedList = updatedList.filter(p => p.id !== item.id);
+            localStorage.setItem('url_printer_recent_projects', JSON.stringify(updatedList));
+            this._renderProjectHistory();
+            this.showToast('Projekt byl odstraněn z historie.', '🗑️');
+          }
+        });
+
+        container.appendChild(card);
+      });
+    }
+
+    _downloadProjectBlob(projectData, customTitle = '') {
+      const docTitle = customTitle || projectData.title || projectData.chapters?.[0]?.title || 'URL_Printer_Projekt';
+      const cleanFileName = (docTitle || 'URL_Printer_Projekt').replace(/[^a-zA-Z0-9á-žÁ-Ž_-]/g, '_') + '.urlprint';
+
+      const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'URL_Printer_Project.urlprint';
+      a.download = cleanFileName;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 1000);
+      this.showToast(`Projekt byl stažen: ${cleanFileName}`, '💾');
+    }
+
+    _exportProjectJSON() {
+      const firstTitle = this.chapterManager.chapters[0]?.title || 'URL_Printer_Projekt';
+      const project = {
+        version: '1.0',
+        id: 'proj_' + Date.now(),
+        title: firstTitle,
+        createdAt: new Date().toISOString(),
+        activeChapterId: this.chapterManager.activeChapterId,
+        config: this.pagination.config,
+        chapters: this.chapterManager.chapters
+      };
+
+      this._downloadProjectBlob(project, firstTitle);
+      this._saveProjectToRecentHistory(project);
+    }
+
+    showToast(message, icon = '✨', duration = 3200) {
+      const toast = document.getElementById('app-toast');
+      const iconEl = document.getElementById('toast-icon');
+      const msgEl = document.getElementById('toast-msg');
+
+      if (!toast) return;
+      if (iconEl) iconEl.textContent = icon;
+      if (msgEl) msgEl.textContent = message;
+
+      toast.classList.add('show');
+      clearTimeout(this._toastTimeout);
+      this._toastTimeout = setTimeout(() => {
+        toast.classList.remove('show');
+      }, duration);
     }
 
     _escapeHTML(str) {

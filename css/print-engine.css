@@ -332,44 +332,78 @@ blockquote.doc-element {
 /* --------------------------------------------------------------------------
    TABLES & WIKIPEDIA TABLES (.wikitable, .infobox)
    -------------------------------------------------------------------------- */
-table.doc-element, .sheet-body table {
+table.doc-element, .sheet-body table, .wp-block-table table {
   width: 100%;
   max-width: 100%;
   border-collapse: collapse;
   margin: 0.85em 0;
   font-size: 8.5pt;
+  line-height: 1.4;
   break-inside: avoid;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid var(--doc-border, #cbd5e1);
+  box-shadow: none !important;
 }
 
-table.doc-element th, .sheet-body table th {
-  background: var(--doc-primary);
-  color: #ffffff;
+.wp-block-table {
+  margin: 0.8em 0;
+  width: 100%;
+}
+
+table.doc-element th, .sheet-body table th, .wp-block-table table th {
+  background: var(--doc-primary-light, #f8fafc);
+  color: var(--doc-headings, #0f172a);
   font-weight: 700;
-  text-align: left;
-  padding: 6px 10px;
-  border: 1px solid var(--doc-primary);
-}
-
-table.doc-element td, .sheet-body table td {
+  text-align: center;
   padding: 6px 10px;
   border: 1px solid var(--doc-border, #cbd5e1);
-  color: var(--doc-text);
+  letter-spacing: 0.01em;
 }
 
-table.doc-element tr:nth-child(even) td, .sheet-body table tr:nth-child(even) td {
-  background-color: var(--doc-primary-light, #f8fafc);
+table.doc-element td, .sheet-body table td, .wp-block-table table td {
+  padding: 6px 8px;
+  border: 1px solid var(--doc-border, #cbd5e1);
+  color: var(--doc-text, #1e293b);
+  vertical-align: middle;
+  background-color: #ffffff;
+  text-align: center;
+}
+
+table.doc-element tr:nth-child(even) td, .sheet-body table tr:nth-child(even) td, .wp-block-table table tr:nth-child(even) td {
+  background-color: #ffffff;
+}
+
+table.doc-element td img, .sheet-body table td img, .doc-table-img {
+  max-width: 100%;
+  height: auto;
+  max-height: 120px;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+  border-radius: 0px;
+}
+
+figure.doc-table-figure {
+  margin: 0.85em 0;
+}
+
+figure.doc-table-figure figcaption {
+  font-size: 7.5pt;
+  color: #64748b;
+  text-align: center;
+  margin-top: 6px;
 }
 
 .infobox, .wikitable {
   border: 1px solid var(--doc-border, #cbd5e1) !important;
-  background: var(--doc-primary-light, #f8fafc) !important;
+  background: #ffffff !important;
   margin: 0.8em 0 !important;
-  border-radius: 6px;
-  overflow: hidden;
+  border-radius: 4px;
 }
 
 .infobox th, .wikitable th {
-  background: var(--doc-primary) !important;
+  background: var(--doc-primary, #0f766e) !important;
   color: #ffffff !important;
 }
 
