@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>URL Printer — Studio pro tisk webu, pracovní sešity a e-booky</title>
+  <meta name="description" content="Kontrolovaný tisk, úprava a offline archivace jakýchkoliv webových stránek. Tvorba pracovních sešitů, skript, e-booků s reálnou sazbou A4/A5 a QR odkazovačem.">
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@500;600;700;800;900&family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- CSS Stylesheets -->
+  <link rel="stylesheet" href="css/themes.css">
+  <link rel="stylesheet" href="css/print-engine.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body data-theme="web-original" data-font="sans" data-img-border="none" data-img-shadow="none" data-img-radius="sharp" data-img-bg="none">
+
+  <!-- ========================================================================
+       TOPBAR: Brand, Output Profiles, Undo/Redo & Export Actions
+       ======================================================================== -->
+  <header class="app-topbar">
+    <div class="brand-section">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+        </svg>
+      </div>
+      <div class="brand-title">
+        <span>URL Printer</span>
+        <span class="brand-badge">STUDIO</span>
+      </div>
+    </div>
+
+    <!-- Specialized Output Profiles -->
+    <div class="profile-bar">
+      <button class="profile-btn active" data-profile="web-identity" title="Původní styl z webu: Zachovává barvy, písmo a vizuální identitu načtené stránky">
+        <span>🌐 Původní styl webu</span>
+      </button>
+      <button class="profile-btn" data-profile="worksheet" title="Pracovní sešit: Široké okraje pro poznámky, linkované plochy a výukové boxy">
+        <span>🎓 Pracovní sešit</span>
+      </button>
+      <button class="profile-btn" data-profile="compact-scripts" title="Kompaktní skripta: Dvousloupcová sazba, úspora toneru a kompaktní písmo">
+        <span>📚 Skripta (2 sloupce)</span>
+      </button>
+      <button class="profile-btn" data-profile="ebook-reader" title="E-book / Offline Reader: Vzdušný jednosloupcový layout pro tablety a čtečky">
+        <span>📱 E-book Reader</span>
+      </button>
+      <button class="profile-btn" data-profile="academic" title="Akademický standard: Serifová sazba a formální záhlaví">
+        <span>🏛️ Akademický</span>
+      </button>
+    </div>
+
+    <!-- Quick Action Buttons & Undo/Redo -->
+    <div class="topbar-actions">
+      <!-- Undo / Redo History Group -->
+      <div class="history-group">
+        <button class="history-btn" id="btn-undo" title="Zpět (Ctrl+Z)" disabled>↩️</button>
+        <button class="history-btn" id="btn-redo" title="Vpřed (Ctrl+Y)" disabled>↪️</button>
+      </div>
+
+      <button class="btn btn-primary" id="btn-open-import">
+        <span>🌐 Importovat URL / Text</span>
+      </button>
+      <button class="btn btn-secondary" id="btn-export-docx" title="Exportovat do upravitelného Microsoft Wordu (.docx)">
+        <span>📝 Word (.docx)</span>
+      </button>
+      <button class="btn btn-success" id="btn-print-pdf" title="Otevřít tiskový dialog a exportovat do PDF">
+        <span>🖨️ Tisk / PDF</span>
+      </button>
+      <button class="btn btn-secondary btn-icon-only" id="btn-save-project" title="Uložit projekt (.urlprint JSON)">
+        <span>💾</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ========================================================================
+       MAIN APP WORKSPACE
+       ======================================================================== -->
+  <main class="app-main">
+    
+    <!-- LEFT SIDEBAR: Chapters, Layout & Themes -->
+    <aside class="app-sidebar">
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab-btn active" data-tab="chapters">
+          <span>📑 Kapitoly</span>
+        </button>
+        <button class="sidebar-tab-btn" data-tab="layout">
+          <span>📐 Sazba & Záhlaví</span>
+        </button>
+        <button class="sidebar-tab-btn" data-tab="themes">
+          <span>🎨 Šablony & Barvy</span>
+        </button>
+      </div>
+
+      <div class="sidebar-scroll-area">
+        
+        <!-- TAB 1: CHAPTER TREE & MULTI-URL -->
+        <div id="tab-chapters" class="sidebar-section">
+          <div class="sidebar-section-title">
+            <span>Strom kapitol dokumentu</span>
+            <span id="stat-chapter-count" class="brand-badge">0 kapitol</span>
+          </div>
+          
+          <div class="chapter-tree-list" id="chapter-tree-list">
+            <!-- Dynamically populated chapters or clean empty state -->
+          </div>
+
+          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="document.getElementById('modal-import').classList.add('open')">
+            <span>➕ Importovat URL / Novou kapitolu</span>
+          </button>
+        </div>
+
+        <!-- TAB 2: PAGE FORMAT, MARGINS, HEADERS/FOOTERS & IMAGE CONTROLS -->
+        <div id="tab-layout" class="sidebar-section" style="display: none;">
+          <div class="sidebar-section-title">Formát a parametry strany</div>
+          
+          <div class="control-group">
+            <label class="control-label">Formát papíru</label>
+            <select id="sel-paper-format" class="control-select">
+              <option value="a4" selected>A4 (210 × 297 mm)</option>
+              <option value="a5">A5 (148 × 210 mm — Sešit / E-kniha)</option>
+              <option value="letter">US Letter (216 × 279 mm)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Orientace</label>
+            <select id="sel-orientation" class="control-select">
+              <option value="portrait" selected>Na výšku (Portrait)</option>
+              <option value="landscape">Na šířku (Landscape)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Počet sloupců</label>
+            <select id="sel-columns" class="control-select">
+              <option value="1" selected>1 sloupec (Čítanka / Sešit)</option>
+              <option value="2">2 sloupce (Kompaktní skripta)</option>
+              <option value="3">3 sloupce (Informační bulletin)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Okraje strany</span>
+              <span id="margin-val-display" style="color: #38bdf8;">20 mm</span>
+            </label>
+            <input type="range" id="range-margins" class="control-range" min="10" max="45" value="20" step="1">
+          </div>
+
+          <!-- URL Source Display Options -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Zdrojová URL adresa</div>
+          <div class="control-group">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-show-source-doc">
+              <span>Zobrazit URL zdroj pod názvem kapitoly</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer; margin-top: 4px;">
+              <input type="checkbox" id="chk-show-source-header">
+              <span>Zahrnout URL zdroj do horního záhlaví</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer; margin-top: 4px;">
+              <input type="checkbox" id="chk-show-source-footer" checked>
+              <span>Zahrnout URL zdroj do dolního zápatí</span>
+            </label>
+          </div>
+
+          <!-- TOC Controls -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Obsah dokumentu (TOC)</div>
+          <div class="control-group">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-enable-toc">
+              <span>Zobrazit automatický obsah (TOC)</span>
+            </label>
+            <select id="sel-toc-position" class="control-select" style="margin-top: 4px;">
+              <option value="after-title" selected>Umístění: Za hlavním nadpisem</option>
+              <option value="standalone-page">Umístění: Na samostatné úvodní straně</option>
+            </select>
+          </div>
+
+          <!-- Header & Footer Controls -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Záhlaví a zápatí</div>
+          
+          <div class="control-group">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-enable-header" checked>
+              <span>Zobrazit horní záhlaví (Header)</span>
+            </label>
+            <div id="header-inputs-box" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
+              <input type="text" id="input-header-left" class="control-input" placeholder="Text vlevo" value="URL Printer Vzdělávací tiskovina">
+              <input type="text" id="input-header-right" class="control-input" placeholder="Text vpravo" value="URL Printer Studio">
+            </div>
+          </div>
+
+          <div class="control-group" style="margin-top: 8px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-enable-footer" checked>
+              <span>Zobrazit dolní zápatí (Footer)</span>
+            </label>
+            <div id="footer-inputs-box" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
+              <input type="text" id="input-footer-left" class="control-input" placeholder="Poznámka vlevo" value="Vytvořeno v URL Printer Studio">
+              <select id="sel-page-num-format" class="control-select">
+                <option value="prefix" selected>Číslování: Strana X z Y</option>
+                <option value="short">Číslování: s. X / Y</option>
+                <option value="simple">Číslování: Pouze číslo (1, 2...)</option>
+                <option value="roman">Číslování: Římské číslice (I, II...)</option>
+                <option value="none">Bez čísel stran</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- IMAGE CUSTOMIZATION CONTROLS -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">🖼️ Přizpůsobení obrázků (Rámečky & Stíny)</div>
+          
+          <div class="control-group">
+            <label class="control-label">Rámeček kolem obrázků</label>
+            <select id="sel-img-border" class="control-select">
+              <option value="none" selected>Žádný rámeček (Čistý tisk)</option>
+              <option value="thin">Tenký šedý rámeček (1px)</option>
+              <option value="accent">Barevný akcentní rámeček (2px)</option>
+              <option value="black">Výrazný černý rámeček (1.5px)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Stín pod obrázkem</label>
+            <select id="sel-img-shadow" class="control-select">
+              <option value="none" selected>Vypnuto (Bez stínu pro čistý tisk)</option>
+              <option value="soft">Jemný prostorový stín</option>
+              <option value="deep">Výrazný 3D stín</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Zaoblení rohů obrázků</label>
+            <select id="sel-img-radius" class="control-select">
+              <option value="sharp" selected>Ostré rohy (0 mm)</option>
+              <option value="medium">Jemně zaoblené (6 mm)</option>
+              <option value="round">Plně zaoblené (12 mm)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Pozadí pod obrázkem (Box / Karta)</label>
+            <select id="sel-img-bg" class="control-select">
+              <option value="none" selected>Průhledné (Přirozené splynutí)</option>
+              <option value="white">Bílá karta s podkladem</option>
+              <option value="card">Světlý tónovaný rámeček</option>
+            </select>
+          </div>
+
+          <!-- Media & QR Options -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Média a chytrý QR odkazovač</div>
+          <div class="control-group">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-enable-qr" checked>
+              <span>Generovat QR kódy pro webové odkazy</span>
+            </label>
+            <select id="sel-media-mode" class="control-select" style="margin-top: 4px;">
+              <option value="normal" selected>Plnobarevný tisk</option>
+              <option value="grayscale">Černobílé obrázky (Stupně šedi)</option>
+              <option value="toner-save">Úsporný režim toneru (B&W)</option>
+              <option value="hide-images">Skrýt obrázky pro úsporu místa</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- TAB 3: THEMES & COLOR PALETTES -->
+        <div id="tab-themes" class="sidebar-section" style="display: none;">
+          <div class="sidebar-section-title">Předlohy a správa barev</div>
+          <div class="palette-grid">
+            <div class="palette-card active" data-theme="web-original">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #2563eb;"></div>
+                <div class="palette-swatch-dot" style="background: #0284c7;"></div>
+              </div>
+              <div class="palette-name">🌐 Původní z webu</div>
+            </div>
+
+            <div class="palette-card" data-theme="modern-edu">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #0f766e;"></div>
+                <div class="palette-swatch-dot" style="background: #0284c7;"></div>
+              </div>
+              <div class="palette-name">Moderní Edu</div>
+            </div>
+
+            <div class="palette-card" data-theme="academic">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #881337;"></div>
+                <div class="palette-swatch-dot" style="background: #4c0519;"></div>
+              </div>
+              <div class="palette-name">Akademický</div>
+            </div>
+
+            <div class="palette-card" data-theme="stem-tech">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #4338ca;"></div>
+                <div class="palette-swatch-dot" style="background: #0891b2;"></div>
+              </div>
+              <div class="palette-name">Technická skripta</div>
+            </div>
+
+            <div class="palette-card" data-theme="toner-saver">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #000000;"></div>
+                <div class="palette-swatch-dot" style="background: #555555;"></div>
+              </div>
+              <div class="palette-name">Eko B&W (Toner)</div>
+            </div>
+
+            <div class="palette-card" data-theme="warm-notebook">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #d97706;"></div>
+                <div class="palette-swatch-dot" style="background: #78716c;"></div>
+              </div>
+              <div class="palette-name">Kávový sešit</div>
+            </div>
+
+            <div class="palette-card" data-theme="corporate-navy">
+              <div class="palette-swatches">
+                <div class="palette-swatch-dot" style="background: #1d4ed8;"></div>
+                <div class="palette-swatch-dot" style="background: #172554;"></div>
+              </div>
+              <div class="palette-name">Korporátní modř</div>
+            </div>
+          </div>
+
+          <!-- Web Style Preservation Checkbox & Custom Brand Color -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Vlastní barva značky / webu</div>
+          <div class="control-group">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+              <input type="checkbox" id="chk-preserve-web-styles" checked>
+              <span>Zachovat původní CSS barvy a inline styly z webu</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+              <input type="color" id="input-brand-color" value="#2563eb" style="width: 32px; height: 32px; border: 1px solid #334155; border-radius: 6px; cursor: pointer; background: transparent;">
+              <span style="font-size: 11px; color: #cbd5e1;">Zvolit primární akcentní barvu</span>
+            </div>
+          </div>
+
+          <!-- Font selector -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Typografie dokumentu</div>
+          <div class="control-group">
+            <select id="sel-font-family" class="control-select">
+              <option value="sans" selected>Moderní bezpatkové (Inter / Outfit)</option>
+              <option value="serif">Klasické patkové (Playfair / Georgia)</option>
+              <option value="dyslexic">Čitelné písmo (Plus Jakarta Sans)</option>
+              <option value="mono">Technické strojové (JetBrains Mono)</option>
+            </select>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- CENTER STAGE: Canvas Viewport & Zoom Controls -->
+    <section class="app-center">
+      
+      <!-- Canvas Status Bar -->
+      <div class="canvas-toolbar">
+        <div class="canvas-status">
+          <span class="status-pill" id="stat-sheet-count">0 stran</span>
+          <span style="font-size: 11px;">💡 Kliknutím na jakýkoliv text či obrázek jej můžete přímo na stránce upravit</span>
+        </div>
+
+        <div class="zoom-controls">
+          <button class="zoom-btn" id="btn-zoom-out" title="Zmenšit">－</button>
+          <span class="zoom-level" id="zoom-val-display">100%</span>
+          <button class="zoom-btn" id="btn-zoom-in" title="Zvětšit">＋</button>
+          <button class="zoom-btn" id="btn-zoom-spread" title="Přepnout zobrazení knižní dvoustrany">📖 Dvoustrana</button>
+        </div>
+      </div>
+
+      <!-- Real Paginated Virtual Sheets -->
+      <div class="sheet-viewport" id="sheet-viewport">
+        <!-- Rendered A4/A5 sheets or empty state card appear here -->
+      </div>
+    </section>
+
+    <!-- RIGHT SIDEBAR: Block Inspector & Quick Educational Elements -->
+    <aside class="inspector-sidebar" id="inspector-panel">
+      <!-- Injected and managed by BlockInspector -->
+    </aside>
+
+  </main>
+
+  <!-- ========================================================================
+       MODAL: MULTI-URL IMPORT & SAMPLE LESSONS
+       ======================================================================== -->
+  <div class="modal-overlay" id="modal-import">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">🌐 Načíst webovou stránku nebo text</div>
+        <button class="modal-close" id="modal-import-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        
+        <!-- Preset Sample Articles (On-demand only) -->
+        <div class="control-group">
+          <label class="control-label">Rychlé ukázky výukových témat (1 klik pro načtení vzoru):</label>
+          <div class="sample-pills">
+            <div class="sample-pill" data-sample-id="physics-sample">⚛️ Kvantová fyzika & Diagram</div>
+            <div class="sample-pill" data-sample-id="biology-sample">🌿 Fotosyntéza & Schéma</div>
+            <div class="sample-pill" data-sample-id="history-sample">📜 Metodika dějepisu & Prameny</div>
+          </div>
+        </div>
+
+        <!-- URL Input -->
+        <div class="control-group" style="margin-top: 10px;">
+          <label class="control-label">Zadejte URL adresu článku:</label>
+          <input type="url" id="import-url-input" class="control-input" placeholder="např. https://www.saxoskola.cz/vyuka/improvizace/od-stupnice-k-improvizaci/">
+        </div>
+
+        <!-- Or Paste HTML / Markdown -->
+        <div class="control-group" style="margin-top: 10px;">
+          <label class="control-label">Nebo vložte text / HTML / Markdown přímo:</label>
+          <textarea id="import-text-input" class="control-input" rows="5" placeholder="# Nadpis kapitoly&#10;&#10;Vložte text, tabulky, obrázky nebo odstavce..."></textarea>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('modal-import').classList.remove('open')">Zrušit</button>
+        <button class="btn btn-primary" id="btn-execute-import">Importovat a vysázet</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Standalone Bundled Script -->
+  <script src="js/app.js"></script>
+</body>
+</html>

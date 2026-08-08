@@ -1,0 +1,222 @@
+/* ==========================================================================
+   URL PRINTER - THEMES & COLOR PALETTES
+   Predefined typographic styles, color variables and toner-saving modes
+   ========================================================================== */
+
+:root {
+  /* Active Theme Colors - Default: Moderní Vzdělávací (Emerald & Slate) */
+  --doc-primary: #0f766e;
+  --doc-primary-light: #f0fdf4;
+  --doc-primary-border: #bbf7d0;
+  --doc-secondary: #0369a1;
+  --doc-accent: #f59e0b;
+  --doc-text: #1e293b;
+  --doc-text-muted: #64748b;
+  --doc-headings: #0f172a;
+  --doc-bg: #ffffff;
+  --doc-paper-bg: #ffffff;
+  --doc-callout-bg: #f8fafc;
+  --doc-border: #e2e8f0;
+  --doc-line-color: #cbd5e1;
+  
+  /* Callout Type Colors */
+  --callout-task-border: #0ea5e9;
+  --callout-task-bg: #f0f9ff;
+  --callout-def-border: #8b5cf6;
+  --callout-def-bg: #faf5ff;
+  --callout-solution-border: #10b981;
+  --callout-solution-bg: #ecfdf5;
+  --callout-warn-border: #f59e0b;
+  --callout-warn-bg: #fffbeb;
+  --callout-summary-border: #6366f1;
+  --callout-summary-bg: #eef2ff;
+
+  /* Typography Variables */
+  --doc-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --doc-font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --doc-font-mono: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
+  --doc-font-size-base: 11pt;
+  --doc-line-height: 1.55;
+  --doc-heading-scale: 1.25;
+
+  /* Sheet Layout Variables */
+  --sheet-width: 210mm;
+  --sheet-height: 297mm;
+  --sheet-margin-top: 20mm;
+  --sheet-margin-bottom: 20mm;
+  --sheet-margin-left: 20mm;
+  --sheet-margin-right: 20mm;
+  --sheet-column-count: 1;
+  --sheet-column-gap: 8mm;
+  --sheet-column-rule: none;
+}
+
+/* ==========================================================================
+   PRESET THEMES
+   ========================================================================== */
+
+/* 0. Původní styl z webu (Web Visual Identity & Brand Styling) */
+body[data-theme="web-original"] {
+  --doc-primary: var(--web-extracted-primary, #2563eb);
+  --doc-primary-light: var(--web-extracted-bg, #f8fafc);
+  --doc-primary-border: var(--web-extracted-border, #cbd5e1);
+  --doc-secondary: var(--web-extracted-secondary, #1e40af);
+  --doc-headings: var(--web-extracted-heading, #0f172a);
+  --doc-text: var(--web-extracted-text, #1e293b);
+  --doc-text-muted: #64748b;
+  --doc-border: #e2e8f0;
+  --doc-font-family: var(--web-extracted-font, 'Inter', system-ui, sans-serif);
+  --doc-font-heading: var(--web-extracted-heading-font, 'Outfit', sans-serif);
+}
+
+/* 1. Moderní Vzdělávací (Emerald / Slate) */
+body[data-theme="modern-edu"] {
+  --doc-primary: #0d9488;
+  --doc-primary-light: #f0fdfa;
+  --doc-primary-border: #99f6e4;
+  --doc-secondary: #0284c7;
+  --doc-headings: #111827;
+  --doc-text: #1f2937;
+  --doc-text-muted: #4b5563;
+  --doc-border: #e5e7eb;
+  --doc-font-family: 'Inter', system-ui, sans-serif;
+  --doc-font-heading: 'Outfit', sans-serif;
+}
+
+/* 2. Akademický Klasik (Burgundy & Warm Paper) */
+body[data-theme="academic"] {
+  --doc-primary: #881337;
+  --doc-primary-light: #fff1f2;
+  --doc-primary-border: #fecdd3;
+  --doc-secondary: #4c0519;
+  --doc-headings: #4c0519;
+  --doc-text: #27272a;
+  --doc-text-muted: #52525b;
+  --doc-border: #e4e4e7;
+  --doc-font-family: 'Merriweather', 'Georgia', serif;
+  --doc-font-heading: 'Playfair Display', 'Georgia', serif;
+  --doc-heading-scale: 1.35;
+}
+
+/* 3. Technická Skripta (Indigo & Cyan STEM) */
+body[data-theme="stem-tech"] {
+  --doc-primary: #4338ca;
+  --doc-primary-light: #eef2ff;
+  --doc-primary-border: #c7d2fe;
+  --doc-secondary: #0891b2;
+  --doc-headings: #1e1b4b;
+  --doc-text: #0f172a;
+  --doc-text-muted: #475569;
+  --doc-border: #cbd5e1;
+  --doc-font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --doc-font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+/* 4. Eko Černobílý tisk (Toner Saver / Pure B&W) */
+body[data-theme="toner-saver"] {
+  --doc-primary: #000000;
+  --doc-primary-light: #ffffff;
+  --doc-primary-border: #000000;
+  --doc-secondary: #333333;
+  --doc-headings: #000000;
+  --doc-text: #000000;
+  --doc-text-muted: #444444;
+  --doc-border: #666666;
+  --doc-line-color: #888888;
+  --doc-callout-bg: #ffffff;
+  
+  --callout-task-border: #000000;
+  --callout-task-bg: #ffffff;
+  --callout-def-border: #000000;
+  --callout-def-bg: #ffffff;
+  --callout-solution-border: #000000;
+  --callout-solution-bg: #ffffff;
+  --callout-warn-border: #000000;
+  --callout-warn-bg: #ffffff;
+  --callout-summary-border: #000000;
+  --callout-summary-bg: #ffffff;
+}
+
+/* 5. Minimalistický Sešit (Warm Amber & Charcoal) */
+body[data-theme="warm-notebook"] {
+  --doc-primary: #d97706;
+  --doc-primary-light: #fffbeb;
+  --doc-primary-border: #fde68a;
+  --doc-secondary: #b45309;
+  --doc-headings: #292524;
+  --doc-text: #44403c;
+  --doc-text-muted: #78716c;
+  --doc-border: #e7e5e4;
+  --doc-font-family: 'Inter', system-ui, sans-serif;
+  --doc-font-heading: 'Outfit', sans-serif;
+}
+
+/* 6. Korporátní Modř (Navy & Cobalt) */
+body[data-theme="corporate-navy"] {
+  --doc-primary: #1d4ed8;
+  --doc-primary-light: #eff6ff;
+  --doc-primary-border: #bfdbfe;
+  --doc-secondary: #1e40af;
+  --doc-headings: #172554;
+  --doc-text: #1e293b;
+  --doc-text-muted: #64748b;
+  --doc-border: #e2e8f0;
+  --doc-font-family: 'Inter', system-ui, sans-serif;
+  --doc-font-heading: 'Outfit', sans-serif;
+}
+
+/* ==========================================================================
+   FONT FAMILIES HELPER CLASSES
+   ========================================================================== */
+body[data-font="sans"] {
+  --doc-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --doc-font-heading: 'Outfit', sans-serif;
+}
+
+body[data-font="serif"] {
+  --doc-font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --doc-font-heading: 'Playfair Display', Georgia, serif;
+}
+
+body[data-font="dyslexic"] {
+  --doc-font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  --doc-font-heading: 'Plus Jakarta Sans', sans-serif;
+  --doc-line-height: 1.7;
+}
+
+body[data-font="mono"] {
+  --doc-font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+  --doc-font-heading: 'Plus Jakarta Sans', monospace;
+}
+
+/* ==========================================================================
+   MEDIA / TONER MODES
+   ========================================================================== */
+body[data-media-mode="hide-images"] .doc-content img,
+body[data-media-mode="hide-images"] .doc-content figure {
+  display: none !important;
+}
+
+body[data-media-mode="grayscale"] .doc-content img,
+body[data-media-mode="grayscale"] .doc-content figure {
+  filter: grayscale(100%) contrast(110%);
+}
+
+body[data-media-mode="outline"] .doc-content img {
+  filter: grayscale(100%) contrast(200%) brightness(120%);
+  border: 1px solid var(--doc-border);
+}
+
+body[data-media-mode="toner-save"] .doc-content img {
+  filter: grayscale(100%) brightness(110%) contrast(120%);
+  max-height: 55mm;
+  object-fit: contain;
+}
+
+body[data-media-mode="toner-save"] .doc-callout,
+body[data-theme="toner-saver"] .doc-callout {
+  background: #ffffff !important;
+  border-width: 1.5pt !important;
+  border-color: #000000 !important;
+  color: #000000 !important;
+}
