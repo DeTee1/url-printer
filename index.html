@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>URL Printer — Studio pro tisk webu, pracovní sešity a e-booky</title>
+  <title>URL Printer Studio — Profesionální sazba, pracovní sešity a tisk webu</title>
   <meta name="description" content="Kontrolovaný tisk, úprava a offline archivace jakýchkoliv webových stránek. Tvorba pracovních sešitů, skript, e-booků s reálnou sazbou A4/A5 a QR odkazovačem.">
   
   <!-- Modern Typography -->
@@ -19,63 +19,191 @@
 <body data-theme="web-original" data-font="sans" data-img-border="none" data-img-shadow="none" data-img-radius="sharp" data-img-bg="none">
 
   <!-- ========================================================================
-       TOPBAR: Brand, Output Profiles, Undo/Redo & Export Actions
+       TOPBAR: Brand, File Operations, Zoom & Page Navigation, Export Actions
        ======================================================================== -->
   <header class="app-topbar">
-    <div class="brand-section">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24">
-          <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
-        </svg>
+    
+    <!-- LEFT: Brand & Core File Operations + Undo/Redo -->
+    <div class="topbar-left-group">
+      <div class="brand-section">
+        <div class="brand-logo" title="URL Printer Studio">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 6 2 18 2 18 9"></polyline>
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+            <rect x="6" y="14" width="12" height="8"></rect>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <span>URL Printer</span>
+          <span class="brand-badge">Studio</span>
+        </div>
       </div>
-      <div class="brand-title">
-        <span>URL Printer</span>
-        <span class="brand-badge">STUDIO</span>
+
+      <div class="topbar-divider"></div>
+
+      <!-- File & Project Actions -->
+      <div class="topbar-btn-group">
+        <button class="btn btn-topbar" id="btn-new-project" title="Založit nový čistý projekt (Reset)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>Nový</span>
+        </button>
+
+        <button class="btn btn-topbar" id="btn-open-projects-top" title="Otevřít uložený projekt nebo historii (*.urlprint)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span>Otevřít</span>
+        </button>
+
+        <button class="btn btn-topbar" id="btn-save-project-top" title="Uložit projekt do souboru (*.urlprint)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span>Uložit</span>
+        </button>
       </div>
-    </div>
 
-    <!-- Specialized Output Profiles -->
-    <div class="profile-bar">
-      <button class="profile-btn active" data-profile="web-identity" title="Původní styl z webu: Zachovává barvy, písmo a vizuální identitu načtené stránky">
-        <span>🌐 Původní styl webu</span>
-      </button>
-      <button class="profile-btn" data-profile="worksheet" title="Pracovní sešit: Široké okraje pro poznámky, linkované plochy a výukové boxy">
-        <span>🎓 Pracovní sešit</span>
-      </button>
-      <button class="profile-btn" data-profile="compact-scripts" title="Kompaktní skripta: Dvousloupcová sazba, úspora toneru a kompaktní písmo">
-        <span>📚 Skripta (2 sloupce)</span>
-      </button>
-      <button class="profile-btn" data-profile="ebook-reader" title="E-book / Offline Reader: Vzdušný jednosloupcový layout pro tablety a čtečky">
-        <span>📱 E-book Reader</span>
-      </button>
-      <button class="profile-btn" data-profile="academic" title="Akademický standard: Serifová sazba a formální záhlaví">
-        <span>🏛️ Akademický</span>
-      </button>
-    </div>
+      <div class="topbar-divider"></div>
 
-    <!-- Quick Action Buttons & Undo/Redo -->
-    <div class="topbar-actions">
-      <!-- Undo / Redo History Group -->
+      <!-- Undo / Redo -->
       <div class="history-group">
-        <button class="history-btn" id="btn-undo" title="Zpět (Ctrl+Z)" disabled>↩️</button>
-        <button class="history-btn" id="btn-redo" title="Vpřed (Ctrl+Y)" disabled>↪️</button>
+        <button class="history-btn" id="btn-undo" title="Zpět (Ctrl+Z)" disabled>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+        </button>
+        <button class="history-btn" id="btn-redo" title="Vpřed (Ctrl+Y)" disabled>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- CENTER: Zoom Controls, Page Navigator & View Options -->
+    <div class="topbar-center-group">
+      <!-- Independent Canvas Zoom -->
+      <div class="zoom-box">
+        <button class="zoom-icon-btn" id="btn-zoom-out" title="Zmenšit zobrazení dokumentu">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            <line x1="8" y1="11" x2="14" y2="11"></line>
+          </svg>
+        </button>
+        <div class="zoom-val-wrap">
+          <input type="number" id="input-zoom-val" class="zoom-num-input" value="100" min="25" max="300" step="5">
+          <span class="zoom-unit">%</span>
+        </div>
+        <button class="zoom-icon-btn" id="btn-zoom-in" title="Zvětšit zobrazení dokumentu">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            <line x1="11" y1="8" x2="11" y2="14"></line>
+            <line x1="8" y1="11" x2="14" y2="11"></line>
+          </svg>
+        </button>
       </div>
 
-      <button class="btn btn-secondary" id="btn-open-projects" title="Otevřít historii a správu projektů">
-        <span>📁 Projekty & Historie</span>
+      <div class="topbar-divider"></div>
+
+      <!-- Page Navigator with Direct Jump -->
+      <div class="page-nav-box">
+        <button class="page-nav-arrow" id="btn-prev-page" title="Předchozí strana">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <span class="page-nav-label">Strana</span>
+        <input type="number" id="input-jump-page" class="page-jump-input" value="1" min="1" max="1" title="Zadejte číslo strany a stiskněte Enter pro okamžitý přeskok">
+        <span class="page-nav-total">z <span id="stat-total-pages">1</span></span>
+        <button class="page-nav-arrow" id="btn-next-page" title="Následující strana">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </button>
+      </div>
+
+      <div class="topbar-divider"></div>
+
+      <!-- View Modes -->
+      <div class="view-toggles-box">
+        <button class="btn-tool-icon" id="btn-zoom-spread" title="Přepnout knižní dvoustranu vedle sebe">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+          </svg>
+          <span class="tooltip-text">Dvoustrana</span>
+        </button>
+        
+        <button class="btn-tool-icon" id="btn-toggle-fullscreen" title="Režim na celou obrazovku (Zen)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <polyline points="9 21 3 21 3 15"></polyline>
+            <line x1="21" y1="3" x2="14" y2="10"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+          <span class="tooltip-text">Celá obrazovka</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- RIGHT: Import, Word, PDF & Sidebar Toggles -->
+    <div class="topbar-right-group">
+      <button class="btn btn-primary" id="btn-open-import" title="Načíst webovou stránku z URL nebo vložit text">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="2" y1="12" x2="22" y2="12"></line>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path>
+        </svg>
+        <span>Importovat</span>
       </button>
-      <button class="btn btn-primary" id="btn-open-import">
-        <span>🌐 Importovat URL / Text</span>
+
+      <button class="btn btn-secondary" id="btn-export-docx" title="Exportovat dokument do Microsoft Word (.docx) se zachováním nadpisů a obrázků">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+          <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        <span>Word (.docx)</span>
       </button>
-      <button class="btn btn-secondary" id="btn-export-docx" title="Exportovat do upravitelného Microsoft Wordu (.docx)">
-        <span>📝 Word (.docx)</span>
-      </button>
+
       <button class="btn btn-success" id="btn-print-pdf" title="Otevřít tiskový dialog a exportovat do PDF">
-        <span>🖨️ Tisk / PDF</span>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 6 2 18 2 18 9"></polyline>
+          <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+          <rect x="6" y="14" width="12" height="8"></rect>
+        </svg>
+        <span>Tisk / PDF</span>
       </button>
-      <button class="btn btn-secondary btn-icon-only" id="btn-save-project" title="Uložit projekt (.urlprint JSON)">
-        <span>💾</span>
-      </button>
+
+      <div class="topbar-divider"></div>
+
+      <!-- Panel Visibility Toggles -->
+      <div class="panel-toggles-group">
+        <button class="btn-panel-toggle active" id="btn-toggle-left-sidebar" title="Zobrazit / skrýt levý ovládací panel">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+        <button class="btn-panel-toggle active" id="btn-toggle-right-sidebar" title="Zobrazit / skrýt pravý panel vlastností">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="15" y1="3" x2="15" y2="21"></line>
+          </svg>
+        </button>
+      </div>
+
       <input type="file" id="file-input-urlprint" accept=".urlprint,.json" style="display: none;">
     </div>
   </header>
@@ -83,25 +211,38 @@
   <!-- ========================================================================
        MAIN APP WORKSPACE
        ======================================================================== -->
-  <main class="app-main">
+  <main class="app-main" id="app-main-layout">
     
-    <!-- LEFT SIDEBAR: Chapters, Layout & Themes -->
-    <aside class="app-sidebar">
+    <!-- LEFT SIDEBAR: Chapters, Layout, Themes & Element Inserter -->
+    <aside class="app-sidebar" id="app-sidebar-left">
       <div class="sidebar-tabs">
         <button class="sidebar-tab-btn active" data-tab="chapters">
-          <span>📑 Kapitoly</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          <span>Kapitoly & Prvky</span>
         </button>
         <button class="sidebar-tab-btn" data-tab="layout">
-          <span>📐 Sazba & Záhlaví</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
+          </svg>
+          <span>Sazba & Okraje</span>
         </button>
         <button class="sidebar-tab-btn" data-tab="themes">
-          <span>🎨 Šablony & Barvy</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 2a10 10 0 0 0 0 20v-2a8 8 0 0 1 0-16V2z"></path>
+          </svg>
+          <span>Šablony & Barvy</span>
         </button>
       </div>
 
       <div class="sidebar-scroll-area">
         
-        <!-- TAB 1: CHAPTER TREE & MULTI-URL -->
+        <!-- TAB 1: CHAPTER TREE & ELEMENT INSERTER -->
         <div id="tab-chapters" class="sidebar-section">
           <div class="sidebar-section-title">
             <span>Strom kapitol dokumentu</span>
@@ -109,15 +250,91 @@
           </div>
           
           <div class="chapter-tree-list" id="chapter-tree-list">
-            <!-- Dynamically populated chapters or clean empty state -->
+            <!-- Dynamically populated chapters -->
           </div>
 
-          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="document.getElementById('modal-import').classList.add('open')">
-            <span>➕ Importovat URL / Novou kapitolu</span>
+          <button class="btn btn-primary btn-block" style="margin-top: 10px;" onclick="document.getElementById('modal-import').classList.add('open')">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <span>Přidat novou kapitolu / URL</span>
           </button>
+
+          <!-- Vložit prvek -->
+          <div class="sidebar-section-title" style="margin-top: 20px;">Vložit prvek</div>
+          <div class="insert-tiles-grid">
+            
+            <!-- Oddělovač -->
+            <div class="insert-tile" id="insert-separator-tile" title="Vložit nastavitelný oddělovač (mezera, linka, ornament)">
+              <div class="insert-tile-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                  <circle cx="12" cy="12" r="2"></circle>
+                </svg>
+              </div>
+              <div class="insert-tile-info">
+                <div class="insert-tile-name">Oddělovač</div>
+                <div class="insert-tile-desc">Linka, mezera nebo ornament</div>
+              </div>
+            </div>
+
+            <!-- Poznámka / Box -->
+            <div class="insert-tile" id="insert-note-tile" title="Vložit formátovaný box poznámky (Úkol, Definice, Varování)">
+              <div class="insert-tile-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                  <line x1="9" y1="13" x2="15" y2="13"></line>
+                  <line x1="9" y1="17" x2="13" y2="17"></line>
+                </svg>
+              </div>
+              <div class="insert-tile-info">
+                <div class="insert-tile-name">Poznámka / Box</div>
+                <div class="insert-tile-desc">Úkol, definice nebo shrnutí</div>
+              </div>
+            </div>
+
+            <!-- Linkované řádky -->
+            <div class="insert-tile" id="insert-lines-tile" title="Vložit linkovanou plochu pro ruční psaní">
+              <div class="insert-tile-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="3" y1="6" x2="21" y2="6"></line>
+                  <line x1="3" y1="12" x2="21" y2="12"></line>
+                  <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+              </div>
+              <div class="insert-tile-info">
+                <div class="insert-tile-name">Linkované řádky</div>
+                <div class="insert-tile-desc">Linky pro poznámky (7 mm)</div>
+              </div>
+            </div>
+
+            <!-- Tečkovaná mřížka -->
+            <div class="insert-tile" id="insert-dots-tile" title="Vložit tečkovanou mřížku pro skicování">
+              <div class="insert-tile-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6" cy="6" r="1.5"></circle>
+                  <circle cx="12" cy="6" r="1.5"></circle>
+                  <circle cx="18" cy="6" r="1.5"></circle>
+                  <circle cx="6" cy="12" r="1.5"></circle>
+                  <circle cx="12" cy="12" r="1.5"></circle>
+                  <circle cx="18" cy="12" r="1.5"></circle>
+                  <circle cx="6" cy="18" r="1.5"></circle>
+                  <circle cx="12" cy="18" r="1.5"></circle>
+                  <circle cx="18" cy="18" r="1.5"></circle>
+                </svg>
+              </div>
+              <div class="insert-tile-info">
+                <div class="insert-tile-name">Tečkovaná síť</div>
+                <div class="insert-tile-desc">Mřížka pro skici (5 mm)</div>
+              </div>
+            </div>
+
+          </div>
         </div>
 
-        <!-- TAB 2: PAGE FORMAT, MARGINS, HEADERS/FOOTERS & IMAGE CONTROLS -->
+        <!-- TAB 2: PAGE FORMAT, MARGINS (WITH VERTICAL SLIDERS), HEADERS/FOOTERS & PAGE NUMBERING -->
         <div id="tab-layout" class="sidebar-section" style="display: none;">
           <div class="sidebar-section-title">Formát a parametry strany</div>
           
@@ -147,37 +364,149 @@
             </select>
           </div>
 
+          <!-- Okraje strany (4 strany zvlášť, táhla umístěna POD číselnými boxy) -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">Okraje strany (mm)</div>
+          
           <div class="control-group">
-            <label class="control-label">
-              <span>Okraje strany</span>
-              <span id="margin-val-display" style="color: #38bdf8;">20 mm</span>
+            <label class="chk-label">
+              <input type="checkbox" id="chk-mirror-margins">
+              <span>Zrcadlové okraje pro knižní vazbu (sudé / liché)</span>
             </label>
-            <input type="range" id="range-margins" class="control-range" min="10" max="45" value="20" step="1">
           </div>
 
-          <!-- URL Source Display Options -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">Zdrojová URL adresa</div>
+          <div class="margins-vertical-grid">
+            <div class="margin-box-field">
+              <div class="margin-label-row">
+                <span class="control-sublabel">Horní okraj (Top)</span>
+                <input type="number" id="num-margin-top" class="control-num-input" value="20" min="5" max="50">
+              </div>
+              <input type="range" id="range-margin-top" class="control-range-full" value="20" min="5" max="50">
+            </div>
+
+            <div class="margin-box-field">
+              <div class="margin-label-row">
+                <span class="control-sublabel">Dolní okraj (Bottom)</span>
+                <input type="number" id="num-margin-bottom" class="control-num-input" value="20" min="5" max="50">
+              </div>
+              <input type="range" id="range-margin-bottom" class="control-range-full" value="20" min="5" max="50">
+            </div>
+
+            <div class="margin-box-field">
+              <div class="margin-label-row">
+                <span class="control-sublabel" id="lbl-margin-left">Levý okraj</span>
+                <input type="number" id="num-margin-left" class="control-num-input" value="20" min="5" max="50">
+              </div>
+              <input type="range" id="range-margin-left" class="control-range-full" value="20" min="5" max="50">
+            </div>
+
+            <div class="margin-box-field">
+              <div class="margin-label-row">
+                <span class="control-sublabel" id="lbl-margin-right">Pravý okraj</span>
+                <input type="number" id="num-margin-right" class="control-num-input" value="20" min="5" max="50">
+              </div>
+              <input type="range" id="range-margin-right" class="control-range-full" value="20" min="5" max="50">
+            </div>
+          </div>
+
+          <!-- Záhlaví & Zápatí s možností rozdělení na sudé/liché -->
+          <div class="sidebar-section-title" style="margin-top: 18px;">Záhlaví a zápatí</div>
+          
           <div class="control-group">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
-              <input type="checkbox" id="chk-show-source-doc">
-              <span>Zobrazit URL zdroj pod názvem kapitoly</span>
+            <label class="chk-label">
+              <input type="checkbox" id="chk-diff-odd-even">
+              <span>Rozdílné záhlaví a zápatí pro liché a sudé stránky</span>
             </label>
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer; margin-top: 4px;">
-              <input type="checkbox" id="chk-show-source-header">
-              <span>Zahrnout URL zdroj do horního záhlaví</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer; margin-top: 4px;">
-              <input type="checkbox" id="chk-show-source-footer" checked>
-              <span>Zahrnout URL zdroj do dolního zápatí</span>
-            </label>
+          </div>
+
+          <!-- Jednoduchý režim (Všechny stránky stejně) -->
+          <div id="hf-simple-mode-panel" class="subcontrol-panel">
+            <div class="control-group">
+              <label class="chk-label">
+                <input type="checkbox" id="chk-enable-header" checked>
+                <span style="font-weight: 600;">Horní záhlaví (Header)</span>
+              </label>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-header-left" class="control-input" placeholder="Vlevo (např. {chapter_title})" value="{chapter_title}">
+                <input type="text" id="input-header-right" class="control-input" placeholder="Vpravo" value="URL Printer Studio">
+              </div>
+            </div>
+
+            <div class="control-group" style="margin-top: 8px;">
+              <label class="chk-label">
+                <input type="checkbox" id="chk-enable-footer" checked>
+                <span style="font-weight: 600;">Dolní zápatí (Footer)</span>
+              </label>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-footer-left" class="control-input" placeholder="Vlevo" value="Vytvořeno v URL Printer Studio">
+                <input type="text" id="input-footer-right" class="control-input" placeholder="Vpravo (např. {url})" value="{url}">
+              </div>
+            </div>
+          </div>
+
+          <!-- Pokročilý režim (Sudé a liché stránky zvlášť) -->
+          <div id="hf-advanced-mode-panel" class="subcontrol-panel" style="display: none;">
+            <div class="page-variant-title">Liché stránky (Pravé):</div>
+            <div class="control-group">
+              <span class="control-sublabel">Záhlaví (Vlevo / Vpravo):</span>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-header-odd-left" class="control-input" placeholder="Vlevo" value="{chapter_title}">
+                <input type="text" id="input-header-odd-right" class="control-input" placeholder="Vpravo" value="URL Printer Studio">
+              </div>
+            </div>
+            <div class="control-group" style="margin-top: 4px;">
+              <span class="control-sublabel">Zápatí (Vlevo / Vpravo):</span>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-footer-odd-left" class="control-input" placeholder="Vlevo" value="Vytvořeno v URL Printer Studio">
+                <input type="text" id="input-footer-odd-right" class="control-input" placeholder="Vpravo" value="{url}">
+              </div>
+            </div>
+
+            <div class="page-variant-title" style="margin-top: 10px;">Sudé stránky (Levé):</div>
+            <div class="control-group">
+              <span class="control-sublabel">Záhlaví (Vlevo / Vpravo):</span>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-header-even-left" class="control-input" placeholder="Vlevo" value="URL Printer Studio">
+                <input type="text" id="input-header-even-right" class="control-input" placeholder="Vpravo" value="{chapter_title}">
+              </div>
+            </div>
+            <div class="control-group" style="margin-top: 4px;">
+              <span class="control-sublabel">Zápatí (Vlevo / Vpravo):</span>
+              <div class="row-inputs-pair">
+                <input type="text" id="input-footer-even-left" class="control-input" placeholder="Vlevo" value="{url}">
+                <input type="text" id="input-footer-even-right" class="control-input" placeholder="Vpravo" value="Vytvořeno v URL Printer Studio">
+              </div>
+            </div>
+          </div>
+
+          <!-- SAMOSTATNÝ ODDÍL: ČÍSLOVÁNÍ STRÁNEK -->
+          <div class="sidebar-section-title" style="margin-top: 18px;">Číslování stránek</div>
+          <div class="control-group">
+            <label class="control-sublabel">Umístění čísla stránky</label>
+            <select id="sel-page-num-position" class="control-select">
+              <option value="footer-right-odd-left-even" selected>Zápatí: Vnější okraj (Lichá vpravo, Sudá vlevo)</option>
+              <option value="footer-center">Zápatí: Uprostřed</option>
+              <option value="footer-right">Zápatí: Vždy vpravo</option>
+              <option value="header-right-odd-left-even">Záhlaví: Vnější okraj (Lichá vpravo, Sudá vlevo)</option>
+              <option value="header-center">Záhlaví: Uprostřed</option>
+              <option value="none">Bez čísel stran</option>
+            </select>
+          </div>
+          <div class="control-group" style="margin-top: 6px;">
+            <label class="control-sublabel">Formát číslování</label>
+            <select id="sel-page-num-format" class="control-select">
+              <option value="prefix" selected>Strana X z Y</option>
+              <option value="short">s. X / Y</option>
+              <option value="simple">Pouze číslo (1, 2, 3...)</option>
+              <option value="roman">Římské číslice (I, II, III...)</option>
+            </select>
           </div>
 
           <!-- TOC Controls -->
           <div class="sidebar-section-title" style="margin-top: 14px;">Obsah dokumentu (TOC)</div>
           <div class="control-group">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+            <label class="chk-label">
               <input type="checkbox" id="chk-enable-toc">
-              <span>Zobrazit automatický obsah (TOC)</span>
+              <span>Vygenerovat automatický obsah dokumentu</span>
             </label>
             <select id="sel-toc-position" class="control-select" style="margin-top: 4px;">
               <option value="after-title" selected>Umístění: Za hlavním nadpisem</option>
@@ -185,169 +514,52 @@
             </select>
           </div>
 
-          <!-- Header & Footer Controls -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">Záhlaví a zápatí</div>
-          
+          <!-- QR & Media -->
+          <div class="sidebar-section-title" style="margin-top: 14px;">QR kódy a média</div>
           <div class="control-group">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
-              <input type="checkbox" id="chk-enable-header" checked>
-              <span>Zobrazit horní záhlaví (Header)</span>
-            </label>
-            <div id="header-inputs-box" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
-              <input type="text" id="input-header-left" class="control-input" placeholder="Text vlevo" value="URL Printer Vzdělávací tiskovina">
-              <input type="text" id="input-header-right" class="control-input" placeholder="Text vpravo" value="URL Printer Studio">
-            </div>
-          </div>
-
-          <div class="control-group" style="margin-top: 8px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
-              <input type="checkbox" id="chk-enable-footer" checked>
-              <span>Zobrazit dolní zápatí (Footer)</span>
-            </label>
-            <div id="footer-inputs-box" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
-              <input type="text" id="input-footer-left" class="control-input" placeholder="Poznámka vlevo" value="Vytvořeno v URL Printer Studio">
-              <select id="sel-page-num-format" class="control-select">
-                <option value="prefix" selected>Číslování: Strana X z Y</option>
-                <option value="short">Číslování: s. X / Y</option>
-                <option value="simple">Číslování: Pouze číslo (1, 2...)</option>
-                <option value="roman">Číslování: Římské číslice (I, II...)</option>
-                <option value="none">Bez čísel stran</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- IMAGE CUSTOMIZATION CONTROLS -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">🖼️ Přizpůsobení obrázků (Rámečky & Stíny)</div>
-          
-          <div class="control-group">
-            <label class="control-label">Rámeček kolem obrázků</label>
-            <select id="sel-img-border" class="control-select">
-              <option value="none" selected>Žádný rámeček (Čistý tisk)</option>
-              <option value="thin">Tenký šedý rámeček (1px)</option>
-              <option value="accent">Barevný akcentní rámeček (2px)</option>
-              <option value="black">Výrazný černý rámeček (1.5px)</option>
-            </select>
-          </div>
-
-          <div class="control-group">
-            <label class="control-label">Stín pod obrázkem</label>
-            <select id="sel-img-shadow" class="control-select">
-              <option value="none" selected>Vypnuto (Bez stínu pro čistý tisk)</option>
-              <option value="soft">Jemný prostorový stín</option>
-              <option value="deep">Výrazný 3D stín</option>
-            </select>
-          </div>
-
-          <div class="control-group">
-            <label class="control-label">Zaoblení rohů obrázků</label>
-            <select id="sel-img-radius" class="control-select">
-              <option value="sharp" selected>Ostré rohy (0 mm)</option>
-              <option value="medium">Jemně zaoblené (6 mm)</option>
-              <option value="round">Plně zaoblené (12 mm)</option>
-            </select>
-          </div>
-
-          <div class="control-group">
-            <label class="control-label">Pozadí pod obrázkem (Box / Karta)</label>
-            <select id="sel-img-bg" class="control-select">
-              <option value="none" selected>Průhledné (Přirozené splynutí)</option>
-              <option value="white">Bílá karta s podkladem</option>
-              <option value="card">Světlý tónovaný rámeček</option>
-            </select>
-          </div>
-
-          <!-- Media & QR Options -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">Média a chytrý QR odkazovač</div>
-          <div class="control-group">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+            <label class="chk-label">
               <input type="checkbox" id="chk-enable-qr" checked>
-              <span>Generovat QR kódy pro webové odkazy</span>
+              <span>Generovat offline SVG QR kódy pro nahrávky a odkazy</span>
             </label>
             <select id="sel-media-mode" class="control-select" style="margin-top: 4px;">
               <option value="normal" selected>Plnobarevný tisk</option>
               <option value="grayscale">Černobílé obrázky (Stupně šedi)</option>
               <option value="toner-save">Úsporný režim toneru (B&W)</option>
-              <option value="hide-images">Skrýt obrázky pro úsporu místa</option>
+              <option value="hide-images">Skrýt obrázky pro maximální úsporu</option>
             </select>
           </div>
         </div>
 
-        <!-- TAB 3: THEMES & COLOR PALETTES -->
+        <!-- TAB 3: THEMES, PRESETS & COLOR PALETTES -->
         <div id="tab-themes" class="sidebar-section" style="display: none;">
-          <div class="sidebar-section-title">Předlohy a správa barev</div>
-          <div class="palette-grid">
-            <div class="palette-card active" data-theme="web-original">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #2563eb;"></div>
-                <div class="palette-swatch-dot" style="background: #0284c7;"></div>
-              </div>
-              <div class="palette-name">🌐 Původní z webu</div>
-            </div>
-
-            <div class="palette-card" data-theme="modern-edu">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #0f766e;"></div>
-                <div class="palette-swatch-dot" style="background: #0284c7;"></div>
-              </div>
-              <div class="palette-name">Moderní Edu</div>
-            </div>
-
-            <div class="palette-card" data-theme="academic">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #881337;"></div>
-                <div class="palette-swatch-dot" style="background: #4c0519;"></div>
-              </div>
-              <div class="palette-name">Akademický</div>
-            </div>
-
-            <div class="palette-card" data-theme="stem-tech">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #4338ca;"></div>
-                <div class="palette-swatch-dot" style="background: #0891b2;"></div>
-              </div>
-              <div class="palette-name">Technická skripta</div>
-            </div>
-
-            <div class="palette-card" data-theme="toner-saver">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #000000;"></div>
-                <div class="palette-swatch-dot" style="background: #555555;"></div>
-              </div>
-              <div class="palette-name">Eko B&W (Toner)</div>
-            </div>
-
-            <div class="palette-card" data-theme="warm-notebook">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #d97706;"></div>
-                <div class="palette-swatch-dot" style="background: #78716c;"></div>
-              </div>
-              <div class="palette-name">Kávový sešit</div>
-            </div>
-
-            <div class="palette-card" data-theme="corporate-navy">
-              <div class="palette-swatches">
-                <div class="palette-swatch-dot" style="background: #1d4ed8;"></div>
-                <div class="palette-swatch-dot" style="background: #172554;"></div>
-              </div>
-              <div class="palette-name">Korporátní modř</div>
-            </div>
+          <div class="sidebar-section-title">Šablony a správa barev</div>
+          
+          <div class="control-group">
+            <label class="control-label">Výběr předpřipravené šablony</label>
+            <select id="sel-preset-template" class="control-select">
+              <option value="web-original" selected>🌐 Původní z webu (Extrahovaný styl)</option>
+              <option value="modern-edu">🎓 Moderní Edu (Pracovní sešit)</option>
+              <option value="academic">🏛️ Akademický standard (Serif)</option>
+              <option value="stem-tech">💻 Technická skripta (Kompaktní)</option>
+              <option value="toner-saver">🌱 Eko B&W (Maximální úspora toneru)</option>
+              <option value="warm-notebook">☕ Kávový sešit (Teplé tóny)</option>
+              <option value="corporate-navy">🏢 Korporátní modř (Profesionální report)</option>
+            </select>
           </div>
 
-          <!-- Web Style Preservation Checkbox & Custom Brand Color -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">Vlastní barva značky / webu</div>
+          <div class="sidebar-section-title" style="margin-top: 14px;">Vlastní akcentní barva značky</div>
           <div class="control-group">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #cbd5e1; cursor: pointer;">
+            <label class="chk-label">
               <input type="checkbox" id="chk-preserve-web-styles" checked>
               <span>Zachovat původní CSS barvy a inline styly z webu</span>
             </label>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-              <input type="color" id="input-brand-color" value="#2563eb" style="width: 32px; height: 32px; border: 1px solid #334155; border-radius: 6px; cursor: pointer; background: transparent;">
-              <span style="font-size: 11px; color: #cbd5e1;">Zvolit primární akcentní barvu</span>
+            <div class="color-picker-row" style="margin-top: 6px;">
+              <input type="color" id="input-brand-color" value="#0284c7" class="color-swatch-input">
+              <span class="color-picker-label">Zvolit primární akcentní barvu</span>
             </div>
           </div>
 
-          <!-- Font selector -->
-          <div class="sidebar-section-title" style="margin-top: 14px;">Typografie dokumentu</div>
+          <div class="sidebar-section-title" style="margin-top: 14px;">Základní typografie dokumentu</div>
           <div class="control-group">
             <select id="sel-font-family" class="control-select">
               <option value="sans" selected>Moderní bezpatkové (Inter / Outfit)</option>
@@ -361,31 +573,75 @@
       </div>
     </aside>
 
-    <!-- CENTER STAGE: Canvas Viewport & Zoom Controls -->
-    <section class="app-center">
+    <!-- CENTER STAGE: Canvas Viewport with Independent Zoom Wrapper & Slide-out Miniatures/TOC Drawer -->
+    <section class="app-center" id="app-canvas-container">
       
-      <!-- Canvas Status Bar -->
-      <div class="canvas-toolbar">
-        <div class="canvas-status">
-          <span class="status-pill" id="stat-sheet-count">0 stran</span>
-          <span style="font-size: 11px;">💡 Kliknutím na jakýkoliv text či obrázek jej můžete přímo na stránce upravit</span>
+      <!-- Slide-out Drawer Toggle in Top-Left Corner -->
+      <button class="canvas-drawer-toggle" id="btn-toggle-drawer" title="Otevřít miniatury stran a obsah dokumentu">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+
+      <!-- Slide-out Miniatures & Document TOC Drawer -->
+      <aside class="canvas-drawer" id="canvas-drawer-panel">
+        <div class="drawer-header">
+          <div class="drawer-tabs">
+            <button class="drawer-tab-btn active" id="drawer-tab-thumbs">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="14" y="14" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+              </svg>
+              <span>Miniatury stran</span>
+            </button>
+            <button class="drawer-tab-btn" id="drawer-tab-toc">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6"></line>
+                <line x1="8" y1="12" x2="21" y2="12"></line>
+                <line x1="8" y1="18" x2="21" y2="18"></line>
+                <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                <line x1="3" y1="18" x2="3.01" y2="18"></line>
+              </svg>
+              <span>Obsah (TOC)</span>
+            </button>
+          </div>
+          <button class="drawer-close-btn" id="btn-close-drawer" title="Zavřít panel">&times;</button>
         </div>
 
-        <div class="zoom-controls">
-          <button class="zoom-btn" id="btn-zoom-out" title="Zmenšit">－</button>
-          <span class="zoom-level" id="zoom-val-display">100%</span>
-          <button class="zoom-btn" id="btn-zoom-in" title="Zvětšit">＋</button>
-          <button class="zoom-btn" id="btn-zoom-spread" title="Přepnout zobrazení knižní dvoustrany">📖 Dvoustrana</button>
+        <div class="drawer-content">
+          <!-- Thumbnail List -->
+          <div class="drawer-thumbs-list" id="drawer-thumbs-list">
+            <!-- Populated dynamically -->
+          </div>
+
+          <!-- Document Outline / TOC Navigation Tree -->
+          <div class="drawer-toc-tree" id="drawer-toc-tree" style="display: none;">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </aside>
+
+      <!-- Status Bar on Bottom of Canvas -->
+      <div class="canvas-bottom-bar">
+        <div class="canvas-status-info">
+          <span class="status-badge" id="stat-sheet-count">0 stran</span>
+          <span class="status-hint">💡 Kliknutím na libovolný text, obrázek či tabulku otevřete panel vlastností pro přímou úpravu</span>
         </div>
       </div>
 
-      <!-- Real Paginated Virtual Sheets -->
+      <!-- Real Paginated Virtual Sheets (Outer viewport handles full-size native scrollbars) -->
       <div class="sheet-viewport" id="sheet-viewport">
-        <!-- Rendered A4/A5 sheets or empty state card appear here -->
+        <!-- Inner Zoom Container: Transform scale applies exclusively to this inner wrapper -->
+        <div class="sheet-zoom-wrapper" id="sheet-zoom-wrapper">
+          <!-- Rendered A4/A5 sheets or empty state card appear here -->
+        </div>
       </div>
     </section>
 
-    <!-- RIGHT SIDEBAR: Block Inspector & Quick Educational Elements -->
+    <!-- RIGHT SIDEBAR: Optimized Block Inspector -->
     <aside class="inspector-sidebar" id="inspector-panel">
       <!-- Injected and managed by BlockInspector -->
     </aside>
@@ -398,12 +654,19 @@
   <div class="modal-overlay" id="modal-import">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">🌐 Načíst webovou stránku nebo text</div>
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span>Načíst webovou stránku nebo text</span>
+        </div>
         <button class="modal-close" id="modal-import-close">&times;</button>
       </div>
       <div class="modal-body">
         
-        <!-- Preset Sample Articles (On-demand only) -->
+        <!-- Preset Sample Articles -->
         <div class="control-group">
           <label class="control-label">Rychlé ukázky výukových témat (1 klik pro načtení vzoru):</label>
           <div class="sample-pills">
@@ -415,13 +678,13 @@
         </div>
 
         <!-- URL Input -->
-        <div class="control-group" style="margin-top: 10px;">
+        <div class="control-group" style="margin-top: 12px;">
           <label class="control-label">Zadejte URL adresu článku:</label>
-          <input type="url" id="import-url-input" class="control-input" placeholder="např. https://www.saxoskola.cz/vyuka/improvizace/od-stupnice-k-improvizaci/">
+          <input type="url" id="import-url-input" class="control-input" placeholder="např. https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/">
         </div>
 
         <!-- Or Paste HTML / Markdown -->
-        <div class="control-group" style="margin-top: 10px;">
+        <div class="control-group" style="margin-top: 12px;">
           <label class="control-label">Nebo vložte text / HTML / Markdown přímo:</label>
           <textarea id="import-text-input" class="control-input" rows="5" placeholder="# Nadpis kapitoly&#10;&#10;Vložte text, tabulky, obrázky nebo odstavce..."></textarea>
         </div>
@@ -440,7 +703,12 @@
   <div class="modal-overlay" id="modal-projects">
     <div class="modal-window" style="max-width: 680px;">
       <div class="modal-header">
-        <div class="modal-title">📁 Správa projektů a historie</div>
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span>Správa projektů a historie</span>
+        </div>
         <button class="modal-close" id="modal-projects-close">&times;</button>
       </div>
       <div class="modal-body">
@@ -448,17 +716,31 @@
         <!-- Action Toolbar inside Modal -->
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
           <button class="btn btn-primary" id="btn-modal-load-file">
-            <span>📂 Načíst ze souboru (*.urlprint)</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Načíst ze souboru (*.urlprint)</span>
           </button>
           <button class="btn btn-secondary" id="btn-modal-save-current">
-            <span>💾 Uložit aktuální projekt</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+              <polyline points="17 21 17 13 7 13 7 21"></polyline>
+              <polyline points="7 3 7 8 15 8"></polyline>
+            </svg>
+            <span>Uložit aktuální projekt</span>
           </button>
-          <button class="btn btn-secondary" id="btn-modal-clear-history" style="color: #f87171;" title="Smazat všechny uložené projekty z historie">
-            <span>🗑️ Vymazat historii</span>
+          <button class="btn btn-secondary" id="btn-modal-clear-history" style="color: #dc2626;" title="Smazat všechny uložené projekty z historie">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>Vymazat historii</span>
           </button>
         </div>
 
-        <div class="sidebar-section-title" style="margin-top: 8px;">
+        <div class="sidebar-section-title" style="margin-top: 14px;">
           <span>Nedávno vytvořené a uložené projekty:</span>
         </div>
 
@@ -476,8 +758,8 @@
 
   <!-- Visual Drag & Drop Overlay for .urlprint files -->
   <div class="drop-zone-overlay" id="drop-zone-overlay">
-    <div style="font-size: 54px;">📥</div>
-    <div style="font-size: 20px; font-weight: 700;">Přetáhněte soubor .urlprint sem pro okamžité načtení projektu</div>
+    <div style="font-size: 50px;">📥</div>
+    <div style="font-size: 18px; font-weight: 700;">Přetáhněte soubor .urlprint sem pro okamžité načtení projektu</div>
     <div style="font-size: 13px; opacity: 0.8;">Podporovány jsou soubory *.urlprint a *.json</div>
   </div>
 
