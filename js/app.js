@@ -1,5 +1,8 @@
 /* ==========================================================================
-   URL PRINTER STUDIO - COMPLETE APPLICATION SCRIPT (V4.8)
+   URL PRINTER STUDIO - COMPLETE APPLICATION SCRIPT (V5.0)
+   - Full Synchronization of UI Controls on Project Load (_syncUIFromConfig)
+   - Fully Functional Auto-TOC (Table of Contents) with Real Page Numbering & Navigation
+   - Completely Independent Page Numbering (Separate from Header/Footer text visibility)
    - Built-in Markdown Table Parser (Converts Markdown | col | col | to Formatted Tables)
    - Inline Markdown Image & Media Support inside Tables and Paragraphs
    - Aggressive Web Scraping Filter (Strips Breadcrumbs, Menus, Jump Links & Related Posts)
@@ -234,6 +237,7 @@
     }
 
     static extractAndCreateQRCards(containerElement) {
+      // 1. Audio and Podcast elements -> QR Cards
       containerElement.querySelectorAll('audio, .audio-player, a[href$=".mp3"], a[href$=".wav"], a[href*="soundcloud.com"], a[href*="spotify.com"]').forEach(audioEl => {
         let audioSrc = '';
         let audioTitle = 'Zvuková nahrávka';
@@ -252,7 +256,7 @@
           card.setAttribute('data-block-type', 'qr-card');
           card.setAttribute('data-href', audioSrc);
 
-          const svg = this.generateSVG(audioSrc);
+          const svg = this.generateSVG(audioSrc, { margin: 1 });
           card.innerHTML = `
             <div class="doc-qr-canvas-wrapper">${svg}</div>
             <div class="doc-qr-info">
@@ -265,23 +269,115 @@
         }
       });
 
-      const links = containerElement.querySelectorAll('a[href]');
-      let counter = 1;
+      // 2. Video Callouts without QR codes -> inject QR Code
+      containerElement.querySelectorAll('.doc-callout-video').forEach(videoCard => {
+        if (!videoCard.querySelector('.doc-qr-canvas-wrapper')) {
+          const link = videoCard.querySelector('a[href]');
+          const videoUrl = link ? link.getAttribute('href') : '';
+          if (videoUrl) {
+            const svg = this.generateSVG(videoUrl, { margin: 1 });
+            const qrWrapper = document.createElement('div');
+            qrWrapper.className = 'doc-qr-canvas-wrapper';
+            qrWrapper.style.width = '20mm';
+            qrWrapper.style.height = '20mm';
+            qrWrapper.style.float = 'left';
+            qrWrapper.style.margin = '0 12px 8px 0';
+            qrWrapper.innerHTML = svg;
+            
+            const header = videoCard.querySelector('.doc-callout-header');
+            if (header && header.nextSibling) {
+              videoCard.insertBefore(qrWrapper, header.nextSibling);
+            } else {
+              videoCard.prepend(qrWrapper);
+            }
+          }
+        }
+      });
 
-      links.forEach(link => {
-        const href = link.getAttribute('href');
-        if (!href || href.startsWith('#') || href.startsWith('javascript:') || link.closest('.doc-qr-card') || link.closest('.doc-callout-video')) return;
+      // 3. Web Links -> Insert QR Code Cards immediately AFTER the paragraph / block containing the link
+      const blocks = Array.from(containerElement.querySelectorAll('p, li, blockquote, div.doc-element, table, figure'));
+      
+      let linkCounter = 1;
+      const seenUrlsInDocument = new Map();
 
-        if (!link.querySelector('.qr-ref-sup')) {
-          const sup = document.createElement('sup');
-          sup.className = 'qr-ref-sup';
-          sup.style.color = 'var(--doc-primary, #0284c7)';
-          sup.style.fontWeight = '700';
-          sup.textContent = ` [QR #${counter++}]`;
-          link.appendChild(sup);
+      blocks.forEach(block => {
+        // Skip elements that are inside other QR cards, video cards or TOC
+        if (block.closest('.doc-qr-card') || block.closest('.doc-qr-inline-card') || block.closest('.doc-callout-video') || block.closest('.doc-toc-wrapper') || block.closest('.doc-source-meta') || block.classList.contains('doc-qr-card') || block.classList.contains('doc-qr-inline-card') || block.classList.contains('doc-callout-video')) {
+          return;
+        }
+
+        const linksInBlock = Array.from(block.querySelectorAll('a[href]')).filter(link => {
+          const href = (link.getAttribute('href') || '').trim();
+          return href && !href.startsWith('#') && !href.startsWith('javascript:');
+        });
+
+        if (linksInBlock.length === 0) return;
+
+        // Collect distinct URLs in this specific block
+        const blockLinks = [];
+        linksInBlock.forEach(link => {
+          const href = link.getAttribute('href').trim();
+          let num;
+          if (seenUrlsInDocument.has(href)) {
+            num = seenUrlsInDocument.get(href);
+          } else {
+            num = linkCounter++;
+            seenUrlsInDocument.set(href, num);
+          }
+
+          const rawText = link.textContent.replace(/\[QR\s*#\d+\]/g, '').trim();
+          if (!blockLinks.some(bl => bl.url === href)) {
+            blockLinks.push({
+              num: num,
+              url: href,
+              text: rawText || href
+            });
+          }
+
+          // Visual badge next to link
+          if (!link.querySelector('.qr-ref-sup')) {
+            const sup = document.createElement('sup');
+            sup.className = 'qr-ref-sup';
+            sup.style.color = 'var(--doc-primary, #0284c7)';
+            sup.style.fontWeight = '800';
+            sup.style.fontSize = '7.5pt';
+            link.appendChild(sup);
+          }
+          link.querySelector('.qr-ref-sup').textContent = ` [QR #${num}]`;
+        });
+
+        // Insert QR code card(s) immediately after this block
+        if (blockLinks.length > 0) {
+          const insertTarget = (block.tagName === 'LI' && block.parentElement) ? block.parentElement : block;
+
+          blockLinks.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'doc-callout doc-qr-inline-card doc-element';
+            card.setAttribute('data-block-type', 'callout');
+            card.setAttribute('data-callout-type', 'qr');
+            card.setAttribute('data-block-id', 'blk_qr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4));
+
+            const svg = this.generateSVG(item.url, { margin: 1 });
+            card.innerHTML = `
+              <div class="doc-qr-canvas-wrapper">${svg}</div>
+              <div class="doc-qr-info">
+                <span class="doc-qr-badge">📱 QR #${item.num} — Odkaz z textu</span>
+                <div class="doc-qr-title">${this._escapeHTML(item.text)}</div>
+                <div class="doc-qr-url"><a href="${this._escapeHTML(item.url)}" target="_blank" rel="noopener">${this._escapeHTML(item.url)}</a></div>
+              </div>
+            `;
+
+            if (insertTarget.nextSibling) {
+              insertTarget.parentNode.insertBefore(card, insertTarget.nextSibling);
+            } else {
+              insertTarget.parentNode.appendChild(card);
+            }
+          });
         }
       });
     }
+
+
 
     static _escapeHTML(str) {
       return (str || '').replace(/[&<>"']/g, m => ({
@@ -565,9 +661,18 @@
           videoCard.className = 'doc-callout doc-callout-video doc-element';
           videoCard.setAttribute('data-block-type', 'callout');
           videoCard.setAttribute('data-callout-type', 'video');
+          const qrSvg = QRGenerator.generateSVG(videoUrl, { margin: 1 });
           videoCard.innerHTML = `
             <div class="doc-callout-header">🎬 Video ukázka: ${this._escapeHTML(cleanTitle)}</div>
-            <p style="margin-bottom: 6px;"><strong>Odkaz na nahrávku:</strong> <a href="${videoUrl}" target="_blank" rel="noopener">${videoUrl}</a></p>
+            <div style="display: flex; gap: 10px; align-items: center; margin: 6px 0;">
+              <div class="doc-qr-canvas-wrapper" style="width: 20mm; height: 20mm; flex-shrink: 0; background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1); border-radius: 4px; padding: 2px;">
+                ${qrSvg}
+              </div>
+              <div style="flex: 1; min-width: 0;">
+                <p style="margin: 0 0 3px 0; font-size: 8.5pt;"><strong>Odkaz na nahrávku:</strong> <a href="${videoUrl}" target="_blank" rel="noopener">${videoUrl}</a></p>
+                <span style="font-size: 7.5pt; color: var(--doc-text-muted, #64748b);">Naskenujte fotoaparátem telefonu pro přímé spuštění videa</span>
+              </div>
+            </div>
             ${videoId ? `<div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/${videoId}/hqdefault.jpg" alt="${this._escapeHTML(cleanTitle)}" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>` : ''}
           `;
           results.push(videoCard);
@@ -705,7 +810,6 @@
 
       if (tag === 'ul' || tag === 'ol') {
         const items = Array.from(node.querySelectorAll(':scope > li'));
-        // Check if list is pure navigation or breadcrumbs
         const isNavList = items.length > 0 && items.every(li => {
           const a = li.querySelector('a');
           const txt = li.textContent.trim();
@@ -936,7 +1040,7 @@
             tableLines.push(lines[i].trim());
             i++;
           }
-          i--; // Adjust back since loop increments i
+          i--;
 
           const tableHtml = this._parseMarkdownTable(tableLines);
           if (tableHtml) {
@@ -984,7 +1088,7 @@
         // 4. Unordered Lists (- item, * item)
         if (/^[-*]\s+/.test(line)) {
           if (/^[-*]\s+\[.*?\]\(.*?\)$/.test(line) && (line.includes('/kategorie/') || line.includes('/tag/') || line.includes('#'))) {
-            continue; // Skip standalone category link lists
+            continue;
           }
           if (!inList || listType !== 'ul') {
             if (inList) html += `</${listType}>\n`;
@@ -1102,7 +1206,6 @@
 
     static _parseInline(str) {
       let s = str || '';
-      // Markdown image: ![alt](url) -> <img src="url" alt="alt" class="doc-table-img">
       s = s.replace(/!\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g, (match, alt, url) => {
         return `<img src="${url}" alt="${this._escapeHTML(alt)}" class="doc-table-img" loading="lazy" style="max-height: 120px; width: auto; margin: 0 auto; display: block;">`;
       });
@@ -1591,7 +1694,7 @@
 
       let elements = Array.from(sandbox.children);
 
-      // TOC handling
+      // TOC handling: Insert placeholder in correct spot
       if (this.config.enableAutoTOC) {
         const dummyTOC = document.createElement('div');
         dummyTOC.className = 'doc-toc-wrapper doc-element';
@@ -1601,14 +1704,24 @@
 
         if (this.config.tocPosition === 'standalone-page') {
           dummyTOC.setAttribute('data-break-before', 'true');
-        }
+          const breakAfter = document.createElement('div');
+          breakAfter.className = 'doc-element doc-page-break';
+          breakAfter.setAttribute('data-break-before', 'true');
 
-        let insertIndex = 0;
-        const firstH1Idx = elements.findIndex(e => e.tagName === 'H1' || e.classList.contains('doc-h1'));
-        if (firstH1Idx !== -1) {
-          insertIndex = firstH1Idx + 1;
+          let insertIndex = 0;
+          const firstH1Idx = elements.findIndex(e => e.tagName === 'H1' || e.classList.contains('doc-h1'));
+          if (firstH1Idx !== -1) {
+            insertIndex = firstH1Idx + 1;
+          }
+          elements.splice(insertIndex, 0, dummyTOC, breakAfter);
+        } else {
+          let insertIndex = 0;
+          const firstH1Idx = elements.findIndex(e => e.tagName === 'H1' || e.classList.contains('doc-h1'));
+          if (firstH1Idx !== -1) {
+            insertIndex = firstH1Idx + 1;
+          }
+          elements.splice(insertIndex, 0, dummyTOC);
         }
-        elements.splice(insertIndex, 0, dummyTOC);
       }
 
       const mmToPx = 3.779528;
@@ -1626,14 +1739,19 @@
         sheetHeightMm = this.config.orientation === 'portrait' ? 297 : 210;
       }
 
-      const headerHeightMm = this.config.includeHeader ? 12 : 0;
-      const footerHeightMm = this.config.includeFooter ? 12 : 0;
+      const hasPageNumInHeader = (this.config.pageNumPosition || '').startsWith('header');
+      const hasPageNumInFooter = (this.config.pageNumPosition || '').startsWith('footer');
+      const needHeader = this.config.includeHeader || hasPageNumInHeader;
+      const needFooter = this.config.includeFooter || hasPageNumInFooter;
+
+      const headerHeightMm = needHeader ? 12 : 0;
+      const footerHeightMm = needFooter ? 12 : 0;
       const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm);
       const availableHeightPx = Math.max(120, availableHeightMm * mmToPx);
       const isMultiCol = (this.config.columns || 1) > 1;
 
       let pageCount = 1;
-      let currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx);
+      let currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
       let currentSheetBody = currentSheet.querySelector('.sheet-body');
       this.zoomWrapper.appendChild(currentSheet);
       this.sheets.push(currentSheet);
@@ -1651,7 +1769,7 @@
 
         if (isManualBreak && currentSheetBody.children.length > 0) {
           pageCount++;
-          currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx);
+          currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
           currentSheetBody = currentSheet.querySelector('.sheet-body');
           this.zoomWrapper.appendChild(currentSheet);
           this.sheets.push(currentSheet);
@@ -1681,7 +1799,7 @@
             const continuationList = this._splitListAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationList) {
               pageCount++;
-              currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx);
+              currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
               currentSheetBody = currentSheet.querySelector('.sheet-body');
               this.zoomWrapper.appendChild(currentSheet);
               this.sheets.push(currentSheet);
@@ -1696,7 +1814,7 @@
             const continuationEl = this._splitParagraphAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationEl) {
               pageCount++;
-              currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx);
+              currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
               currentSheetBody = currentSheet.querySelector('.sheet-body');
               this.zoomWrapper.appendChild(currentSheet);
               this.sheets.push(currentSheet);
@@ -1709,7 +1827,7 @@
           cloned.remove();
 
           pageCount++;
-          currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx);
+          currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
           currentSheetBody = currentSheet.querySelector('.sheet-body');
           this.zoomWrapper.appendChild(currentSheet);
           this.sheets.push(currentSheet);
@@ -1742,13 +1860,17 @@
         });
       }
 
+      // Populate interactive TOC
       if (this.config.enableAutoTOC) {
-        const tocContainer = this.zoomWrapper.querySelector('.doc-toc-wrapper');
-        if (tocContainer) {
+        const tocContainers = Array.from(this.zoomWrapper.querySelectorAll('.doc-toc-wrapper'));
+        if (tocContainers.length > 0) {
           const computedTOC = TOCGenerator.buildTOC(this.zoomWrapper, {
             title: 'Obsah dokumentu'
           });
-          tocContainer.replaceWith(computedTOC.element);
+          tocContainers[0].replaceWith(computedTOC.element);
+          for (let t = 1; t < tocContainers.length; t++) {
+            tocContainers[t].remove();
+          }
         }
       }
 
@@ -1819,7 +1941,7 @@
       return nextP;
     }
 
-    _createEmptySheet(pageNum, widthMm, heightMm, activeChapter, availableHeightPx) {
+    _createEmptySheet(pageNum, widthMm, heightMm, activeChapter, availableHeightPx, needHeader, needFooter) {
       const isOdd = pageNum % 2 !== 0;
       const sheet = document.createElement('div');
       sheet.className = `paper-sheet ${isOdd ? 'sheet-odd' : 'sheet-even'}`;
@@ -1848,7 +1970,7 @@
       const inner = document.createElement('div');
       inner.className = 'sheet-inner';
 
-      if (this.config.includeHeader) {
+      if (needHeader) {
         const header = document.createElement('div');
         header.className = 'sheet-header';
         header.innerHTML = `
@@ -1867,7 +1989,7 @@
       }
       inner.appendChild(body);
 
-      if (this.config.includeFooter) {
+      if (needFooter) {
         const footer = document.createElement('div');
         footer.className = 'sheet-footer';
         footer.innerHTML = `
@@ -1894,6 +2016,7 @@
         let pageStr = `${pageNum}`;
         if (this.config.pageNumFormat === 'prefix') pageStr = `Strana ${pageNum} z ${totalPages}`;
         else if (this.config.pageNumFormat === 'short') pageStr = `s. ${pageNum} / ${totalPages}`;
+        else if (this.config.pageNumFormat === 'simple') pageStr = `${pageNum}`;
         else if (this.config.pageNumFormat === 'roman') pageStr = this._toRoman(pageNum);
 
         const formatTokens = (txt) => {
@@ -1925,26 +2048,42 @@
         const footerCenterEl = sheet.querySelector('.footer-slot-center');
         const footerRightEl = sheet.querySelector('.footer-slot-right');
 
-        if (headerLeftEl) headerLeftEl.textContent = formatTokens(hLeft);
-        if (headerRightEl) headerRightEl.textContent = formatTokens(hRight);
-        if (footerLeftEl) footerLeftEl.textContent = formatTokens(fLeft);
-        if (footerRightEl) footerRightEl.textContent = formatTokens(fRight);
+        // Header text visibility
+        if (this.config.includeHeader) {
+          if (headerLeftEl) headerLeftEl.textContent = formatTokens(hLeft);
+          if (headerRightEl) headerRightEl.textContent = formatTokens(hRight);
+        } else {
+          if (headerLeftEl) headerLeftEl.textContent = '';
+          if (headerRightEl) headerRightEl.textContent = '';
+        }
 
+        // Footer text visibility
+        if (this.config.includeFooter) {
+          if (footerLeftEl) footerLeftEl.textContent = formatTokens(fLeft);
+          if (footerRightEl) footerRightEl.textContent = formatTokens(fRight);
+        } else {
+          if (footerLeftEl) footerLeftEl.textContent = '';
+          if (footerRightEl) footerRightEl.textContent = '';
+        }
+
+        // Independent Page Numbering
         const pos = this.config.pageNumPosition;
-        const pageSpan = `<span class="page-number-display">${pageStr}</span>`;
+        if (pos !== 'none') {
+          const pageSpan = `<span class="page-number-display">${pageStr}</span>`;
 
-        if (pos === 'footer-right-odd-left-even') {
-          if (isOdd && footerRightEl) footerRightEl.innerHTML = pageSpan;
-          else if (!isOdd && footerLeftEl) footerLeftEl.innerHTML = pageSpan;
-        } else if (pos === 'footer-center' && footerCenterEl) {
-          footerCenterEl.innerHTML = pageSpan;
-        } else if (pos === 'footer-right' && footerRightEl) {
-          footerRightEl.innerHTML = pageSpan;
-        } else if (pos === 'header-right-odd-left-even') {
-          if (isOdd && headerRightEl) headerRightEl.innerHTML = pageSpan;
-          else if (!isOdd && headerLeftEl) headerLeftEl.innerHTML = pageSpan;
-        } else if (pos === 'header-center' && headerCenterEl) {
-          headerCenterEl.innerHTML = pageSpan;
+          if (pos === 'footer-right-odd-left-even') {
+            if (isOdd && footerRightEl) footerRightEl.innerHTML = pageSpan;
+            else if (!isOdd && footerLeftEl) footerLeftEl.innerHTML = pageSpan;
+          } else if (pos === 'footer-center' && footerCenterEl) {
+            footerCenterEl.innerHTML = pageSpan;
+          } else if (pos === 'footer-right' && footerRightEl) {
+            footerRightEl.innerHTML = pageSpan;
+          } else if (pos === 'header-right-odd-left-even') {
+            if (isOdd && headerRightEl) headerRightEl.innerHTML = pageSpan;
+            else if (!isOdd && headerLeftEl) headerLeftEl.innerHTML = pageSpan;
+          } else if (pos === 'header-center' && headerCenterEl) {
+            headerCenterEl.innerHTML = pageSpan;
+          }
         }
       });
     }
@@ -2565,6 +2704,8 @@
       this._bindDragAndDrop();
       this._bindCanvasInteractions();
 
+      this._syncUIFromConfig(this.paginationEngine.config);
+
       this.chapterManager.onChange((chapters, activeId) => {
         this._renderChapterTree(chapters, activeId);
         this.repaginate();
@@ -2579,6 +2720,120 @@
           this.redo();
         }
       });
+    }
+
+    _syncUIFromConfig(config) {
+      if (!config) return;
+
+      // Paper Format, Orientation & Columns
+      const selFormat = document.getElementById('sel-paper-format');
+      if (selFormat && config.format) selFormat.value = config.format;
+
+      const selOrient = document.getElementById('sel-orientation');
+      if (selOrient && config.orientation) selOrient.value = config.orientation;
+
+      const selCols = document.getElementById('sel-columns');
+      if (selCols && config.columns !== undefined) selCols.value = config.columns;
+
+      // Margins (Inputs & Sliders)
+      const setMarginUI = (numId, rangeId, val) => {
+        const numEl = document.getElementById(numId);
+        const rangeEl = document.getElementById(rangeId);
+        if (numEl && val !== undefined) numEl.value = val;
+        if (rangeEl && val !== undefined) rangeEl.value = val;
+      };
+      setMarginUI('num-margin-top', 'range-margin-top', config.marginTop);
+      setMarginUI('num-margin-bottom', 'range-margin-bottom', config.marginBottom);
+      setMarginUI('num-margin-left', 'range-margin-left', config.marginLeft);
+      setMarginUI('num-margin-right', 'range-margin-right', config.marginRight);
+
+      // Mirror Margins
+      const chkMirror = document.getElementById('chk-mirror-margins');
+      if (chkMirror && config.mirrorMargins !== undefined) {
+        chkMirror.checked = !!config.mirrorMargins;
+        const lblL = document.getElementById('lbl-margin-left');
+        const lblR = document.getElementById('lbl-margin-right');
+        if (lblL) lblL.textContent = chkMirror.checked ? 'Vnitřní okraj (Vazba)' : 'Levý okraj';
+        if (lblR) lblR.textContent = chkMirror.checked ? 'Vnější okraj' : 'Pravý okraj';
+      }
+
+      // Headers & Footers Enable
+      const chkH = document.getElementById('chk-enable-header');
+      if (chkH && config.includeHeader !== undefined) chkH.checked = !!config.includeHeader;
+
+      const chkF = document.getElementById('chk-enable-footer');
+      if (chkF && config.includeFooter !== undefined) chkF.checked = !!config.includeFooter;
+
+      // Diff Odd/Even
+      const chkDiff = document.getElementById('chk-diff-odd-even');
+      const simplePanel = document.getElementById('hf-simple-mode-panel');
+      const advPanel = document.getElementById('hf-advanced-mode-panel');
+      if (chkDiff && config.diffOddEven !== undefined) {
+        chkDiff.checked = !!config.diffOddEven;
+        if (simplePanel) simplePanel.style.display = chkDiff.checked ? 'none' : 'flex';
+        if (advPanel) advPanel.style.display = chkDiff.checked ? 'flex' : 'none';
+      }
+
+      // Header & Footer Texts
+      const setVal = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && v !== undefined) el.value = v;
+      };
+      setVal('input-header-left', config.headerLeft);
+      setVal('input-header-right', config.headerRight);
+      setVal('input-footer-left', config.footerLeft);
+      setVal('input-footer-right', config.footerRight);
+
+      setVal('input-header-odd-left', config.headerOddLeft);
+      setVal('input-header-odd-right', config.headerOddRight);
+      setVal('input-header-even-left', config.headerEvenLeft);
+      setVal('input-header-even-right', config.headerEvenRight);
+
+      setVal('input-footer-odd-left', config.footerOddLeft);
+      setVal('input-footer-odd-right', config.footerOddRight);
+      setVal('input-footer-even-left', config.footerEvenLeft);
+      setVal('input-footer-even-right', config.footerEvenRight);
+
+      // Page Numbers Position & Format
+      const selPos = document.getElementById('sel-page-num-position');
+      if (selPos && config.pageNumPosition) selPos.value = config.pageNumPosition;
+
+      const selFormatNum = document.getElementById('sel-page-num-format');
+      if (selFormatNum && config.pageNumFormat) selFormatNum.value = config.pageNumFormat;
+
+      // Table of Contents (TOC)
+      const chkTOC = document.getElementById('chk-enable-toc');
+      if (chkTOC && config.enableAutoTOC !== undefined) chkTOC.checked = !!config.enableAutoTOC;
+
+      const selTOCPos = document.getElementById('sel-toc-position');
+      if (selTOCPos && config.tocPosition) selTOCPos.value = config.tocPosition;
+
+      // QR & Media Mode
+      const chkQR = document.getElementById('chk-enable-qr');
+      if (chkQR && config.enableQRFootnotes !== undefined) chkQR.checked = !!config.enableQRFootnotes;
+
+      const selMedia = document.getElementById('sel-media-mode');
+      if (selMedia && config.mediaMode) {
+        selMedia.value = config.mediaMode;
+        document.body.setAttribute('data-media-mode', config.mediaMode);
+      }
+
+      // Themes & Fonts
+      if (config.theme) {
+        document.body.setAttribute('data-theme', config.theme);
+        const selTheme = document.getElementById('sel-preset-template');
+        if (selTheme) selTheme.value = config.theme;
+      }
+      if (config.font) {
+        document.body.setAttribute('data-font', config.font);
+        const selFont = document.getElementById('sel-font-family');
+        if (selFont) selFont.value = config.font;
+      }
+      if (config.brandColor) {
+        document.documentElement.style.setProperty('--doc-primary', config.brandColor);
+        const inputBrand = document.getElementById('input-brand-color');
+        if (inputBrand) inputBrand.value = config.brandColor;
+      }
     }
 
     repaginate() {
@@ -2643,7 +2898,6 @@
         }
       }
 
-      // If still not found by data-block-id, find by index matching the sheet elements
       if (!targetInMaster && this.inspector.selectedElement) {
         const selectedEl = this.inspector.selectedElement;
         const allSheetElements = Array.from(document.querySelectorAll('#sheet-zoom-wrapper .sheet-body > .doc-element'));
@@ -2912,6 +3166,31 @@
         el.addEventListener('change', updateHeaderFooterConfig);
       });
 
+      // Table of Contents (TOC) Controls
+      document.getElementById('chk-enable-toc')?.addEventListener('change', (e) => {
+        this.paginationEngine.updateConfig({ enableAutoTOC: e.target.checked });
+        this.repaginate();
+      });
+
+      document.getElementById('sel-toc-position')?.addEventListener('change', (e) => {
+        this.paginationEngine.updateConfig({ tocPosition: e.target.value });
+        this.repaginate();
+      });
+
+      // QR & Media Mode Controls
+      document.getElementById('chk-enable-qr')?.addEventListener('change', (e) => {
+        this.paginationEngine.updateConfig({ enableQRFootnotes: e.target.checked });
+        this.repaginate();
+      });
+
+      document.getElementById('sel-media-mode')?.addEventListener('change', (e) => {
+        const mode = e.target.value;
+        document.body.setAttribute('data-media-mode', mode);
+        this.paginationEngine.updateConfig({ mediaMode: mode });
+        this.repaginate();
+      });
+
+
       document.getElementById('sel-preset-template')?.addEventListener('change', (e) => {
         document.body.setAttribute('data-theme', e.target.value);
         this.repaginate();
@@ -3026,21 +3305,46 @@
       if (!thumbsList) return;
       thumbsList.innerHTML = '';
 
+      const targetThumbWidth = 136;
+
       sheets.forEach((sheet, idx) => {
         const pageNum = idx + 1;
         const card = document.createElement('div');
         card.className = 'drawer-thumb-card';
 
-        const preview = document.createElement('div');
-        preview.className = 'drawer-thumb-preview';
-        const bodyContent = sheet.querySelector('.sheet-body')?.innerHTML || '';
-        preview.innerHTML = bodyContent;
+        const frame = document.createElement('div');
+        frame.className = 'drawer-thumb-frame';
+
+        const sheetWidth = sheet.offsetWidth || (sheet.getAttribute('data-orientation') === 'landscape' ? 1123 : 794);
+        const sheetHeight = sheet.offsetHeight || (sheet.getAttribute('data-orientation') === 'landscape' ? 794 : 1123);
+        const scale = targetThumbWidth / sheetWidth;
+        const thumbHeight = Math.round(sheetHeight * scale);
+
+        frame.style.width = targetThumbWidth + 'px';
+        frame.style.height = thumbHeight + 'px';
+
+        const clonedSheet = sheet.cloneNode(true);
+        clonedSheet.classList.remove('active-selected');
+        clonedSheet.querySelectorAll('.active-selected').forEach(el => el.classList.remove('active-selected'));
+        clonedSheet.removeAttribute('id');
+        clonedSheet.style.margin = '0';
+        clonedSheet.style.boxShadow = 'none';
+        clonedSheet.style.border = 'none';
+        clonedSheet.style.position = 'absolute';
+        clonedSheet.style.top = '0';
+        clonedSheet.style.left = '0';
+        clonedSheet.style.transformOrigin = 'top left';
+        clonedSheet.style.transform = `scale(${scale})`;
+        clonedSheet.style.pointerEvents = 'none';
+        clonedSheet.style.userSelect = 'none';
+
+        frame.appendChild(clonedSheet);
 
         const footer = document.createElement('div');
         footer.className = 'drawer-thumb-footer';
         footer.textContent = `Strana ${pageNum}`;
 
-        card.appendChild(preview);
+        card.appendChild(frame);
         card.appendChild(footer);
 
         card.addEventListener('click', () => {
@@ -3052,6 +3356,7 @@
         thumbsList.appendChild(card);
       });
     }
+
 
     _renderDrawerTOC() {
       const treeTOC = document.getElementById('drawer-toc-tree');
@@ -3257,11 +3562,18 @@
     _saveCurrentProject() {
       const activeChap = this.chapterManager.getActiveChapter();
       const projId = 'proj_' + Date.now();
+      
+      const currentConfig = Object.assign({}, this.paginationEngine.config, {
+        theme: document.body.getAttribute('data-theme') || 'web-original',
+        font: document.body.getAttribute('data-font') || 'sans',
+        brandColor: document.getElementById('input-brand-color')?.value || '#0284c7'
+      });
+
       const projectData = {
         id: projId,
         title: activeChap ? activeChap.title : 'Dokument bez názvu',
         savedAt: new Date().toISOString(),
-        config: this.paginationEngine.config,
+        config: currentConfig,
         chapters: this.chapterManager.chapters
       };
 
@@ -3287,7 +3599,10 @@
           const data = JSON.parse(e.target.result);
           if (data && data.chapters && Array.isArray(data.chapters)) {
             this.chapterManager.clear();
-            if (data.config) this.paginationEngine.updateConfig(data.config);
+            if (data.config) {
+              this.paginationEngine.updateConfig(data.config);
+              this._syncUIFromConfig(data.config);
+            }
             data.chapters.forEach(ch => {
               this.chapterManager.addChapter(ch.title, ch.htmlContent, ch.sourceUrl, ch);
             });
@@ -3338,7 +3653,10 @@
 
         card.querySelector('.btn-card-open')?.addEventListener('click', () => {
           this.chapterManager.clear();
-          if (p.config) this.paginationEngine.updateConfig(p.config);
+          if (p.config) {
+            this.paginationEngine.updateConfig(p.config);
+            this._syncUIFromConfig(p.config);
+          }
           p.chapters?.forEach(ch => {
             this.chapterManager.addChapter(ch.title, ch.htmlContent, ch.sourceUrl, ch);
           });
