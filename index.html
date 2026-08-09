@@ -16,7 +16,8 @@
   <link rel="stylesheet" href="css/print-engine.css">
   <link rel="stylesheet" href="css/app.css">
 </head>
-<body data-theme="web-original" data-font="sans" data-img-border="none" data-img-shadow="none" data-img-radius="sharp" data-img-bg="none">
+<body data-theme="web-original" data-font="web-original" data-img-border="none" data-img-shadow="none" data-img-radius="sharp" data-img-bg="none">
+
 
   <!-- ========================================================================
        TOPBAR: Brand, File Operations, Zoom & Page Navigation, Export Actions
@@ -66,6 +67,11 @@
           </svg>
           <span>Uložit</span>
         </button>
+
+        <a class="btn btn-topbar" href="test_runner.html" target="_blank" title="Otevřít automatickou testovací a diagnostickou rutinu" style="text-decoration: none;">
+          <span style="font-size: 13px;">🧪</span>
+          <span>Testy</span>
+        </a>
       </div>
 
       <div class="topbar-divider"></div>
@@ -535,15 +541,19 @@
           <div class="sidebar-section-title">Šablony a správa barev</div>
           
           <div class="control-group">
-            <label class="control-label">Výběr předpřipravené šablony</label>
+            <label class="control-label">Výběr šablony a barev</label>
             <select id="sel-preset-template" class="control-select">
-              <option value="web-original" selected>🌐 Původní z webu (Extrahovaný styl)</option>
-              <option value="modern-edu">🎓 Moderní Edu (Pracovní sešit)</option>
-              <option value="academic">🏛️ Akademický standard (Serif)</option>
-              <option value="stem-tech">💻 Technická skripta (Kompaktní)</option>
-              <option value="toner-saver">🌱 Eko B&W (Maximální úspora toneru)</option>
-              <option value="warm-notebook">☕ Kávový sešit (Teplé tóny)</option>
-              <option value="corporate-navy">🏢 Korporátní modř (Profesionální report)</option>
+              <optgroup id="optgroup-web-sources" label="🌐 Extrahované styly z webu">
+                <option value="web-original" selected>🌐 Původní styl z webu (Aktivní URL)</option>
+              </optgroup>
+              <optgroup label="🎨 Předpřipravené šablony studia">
+                <option value="modern-edu">🎓 Moderní Edu (Pracovní sešit)</option>
+                <option value="academic">🏛️ Akademický standard (Serif)</option>
+                <option value="stem-tech">💻 Technická skripta (Kompaktní)</option>
+                <option value="toner-saver">🌱 Eko B&W (Maximální úspora toneru)</option>
+                <option value="warm-notebook">☕ Kávový sešit (Teplé tóny)</option>
+                <option value="corporate-navy">🏢 Korporátní modř (Profesionální report)</option>
+              </optgroup>
             </select>
           </div>
 
@@ -562,7 +572,8 @@
           <div class="sidebar-section-title" style="margin-top: 14px;">Základní typografie dokumentu</div>
           <div class="control-group">
             <select id="sel-font-family" class="control-select">
-              <option value="sans" selected>Moderní bezpatkové (Inter / Outfit)</option>
+              <option value="web-original" selected>🌐 Původní typografie webu (Extrahované písmo)</option>
+              <option value="sans">Moderní bezpatkové (Inter / Outfit)</option>
               <option value="serif">Klasické patkové (Playfair / Georgia)</option>
               <option value="dyslexic">Čitelné písmo (Plus Jakarta Sans)</option>
               <option value="mono">Technické strojové (JetBrains Mono)</option>
@@ -668,31 +679,34 @@
         
         <!-- Preset Sample Articles -->
         <div class="control-group">
-          <label class="control-label">Rychlé ukázky výukových témat (1 klik pro načtení vzoru):</label>
+          <label class="control-label">Rychlé ukázky (1 klik pro vložení URL nebo vzoru):</label>
           <div class="sample-pills">
-            <div class="sample-pill" data-sample-id="sax-types-sample">🎷 Saxofony: Typy, tabulka & transpozice</div>
-            <div class="sample-pill" data-sample-id="physics-sample">⚛️ Kvantová fyzika & Diagram</div>
-            <div class="sample-pill" data-sample-id="biology-sample">🌿 Fotosyntéza & Schéma</div>
-            <div class="sample-pill" data-sample-id="history-sample">📜 Metodika dějepisu & Prameny</div>
+            <div class="sample-pill" onclick="document.getElementById('import-url-input').value='https://www.saxoskola.cz/vse-okolo-saxofonu/rozsirene-techniky-na-saxofon/'; document.getElementById('btn-execute-import').click();">🎷 SAXOŠKOLA: Rozšířené techniky</div>
+            <div class="sample-pill" onclick="document.getElementById('import-url-input').value='https://en.wikipedia.org/wiki/Saxophone'; document.getElementById('btn-execute-import').click();">📖 Wikipedia: Saxophone</div>
+            <div class="sample-pill" data-sample-id="sax-types-sample">🎷 Saxofony: Vzorová lekce</div>
+            <div class="sample-pill" data-sample-id="physics-sample">⚛️ Fyzika & Diagram</div>
           </div>
         </div>
 
         <!-- URL Input -->
         <div class="control-group" style="margin-top: 12px;">
-          <label class="control-label">Zadejte URL adresu článku:</label>
-          <input type="url" id="import-url-input" class="control-input" placeholder="např. https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/">
+          <label class="control-label">Zadejte URL adresu článku (Stiskněte Enter pro import):</label>
+          <input type="url" id="import-url-input" class="control-input" placeholder="např. https://www.saxoskola.cz/vse-okolo-saxofonu/rozsirene-techniky-na-saxofon/">
         </div>
 
         <!-- Or Paste HTML / Markdown -->
         <div class="control-group" style="margin-top: 12px;">
           <label class="control-label">Nebo vložte text / HTML / Markdown přímo:</label>
-          <textarea id="import-text-input" class="control-input" rows="5" placeholder="# Nadpis kapitoly&#10;&#10;Vložte text, tabulky, obrázky nebo odstavce..."></textarea>
+          <textarea id="import-text-input" class="control-input" rows="4" placeholder="# Nadpis kapitoly&#10;&#10;Vložte text, tabulky, obrázky nebo odstavce..."></textarea>
         </div>
 
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="document.getElementById('modal-import').classList.remove('open')">Zrušit</button>
-        <button class="btn btn-primary" id="btn-execute-import">Importovat a vysázet</button>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+        <a href="test_runner.html" target="_blank" style="font-size: 11px; color: var(--ui-primary); text-decoration: underline; font-weight: 600;">🧪 Spustit automatickou testovací rutinu</a>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" onclick="document.getElementById('modal-import').classList.remove('open')">Zrušit</button>
+          <button class="btn btn-primary" id="btn-execute-import">Importovat a vysázet</button>
+        </div>
       </div>
     </div>
   </div>
@@ -769,7 +783,8 @@
     <span id="toast-msg">Zpráva</span>
   </div>
 
-  <!-- Standalone Bundled Script -->
+  <!-- Standalone Bundled Script & Mozilla Readability Engine -->
+  <script src="js/readability.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

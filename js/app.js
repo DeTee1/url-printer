@@ -472,56 +472,109 @@
      3. CONTENT EXTRACTOR & MULTI-PROXY WEB LOADER (With Markdown Tables)
      ========================================================================== */
   class ContentExtractor {
+    static async fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(timeoutId);
+        return res;
+      } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
+      }
+    }
+
     static async fetchFromUrl(targetUrl, preserveStyles = true) {
       const cleanUrl = targetUrl.trim();
       if (!cleanUrl) throw new Error('Zadejte platnou URL adresu.');
 
+      // 0. Dedicated Official Wikipedia REST API (100% CORS-friendly and instant)
+      if (cleanUrl.includes('wikipedia.org/wiki/')) {
+        try {
+          const wikiSlug = cleanUrl.split('/wiki/')[1]?.split('#')[0]?.split('?')[0];
+          const wikiLang = (cleanUrl.match(/https?:\/\/([a-z-]+)\.wikipedia\.org/i) || [])[1] || 'en';
+          if (wikiSlug) {
+            const wikiRes = await this.fetchWithTimeout(`https://${wikiLang}.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(decodeURIComponent(wikiSlug))}`, {}, 6000);
+            if (wikiRes.ok) {
+              const wikiHtml = await wikiRes.text();
+              if (wikiHtml && wikiHtml.length > 200) {
+                return this.sanitizeRawHTML(wikiHtml, cleanUrl, preserveStyles);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Wikipedia direct API fallback:', e);
+        }
+      }
+
+      const jinaTarget = cleanUrl.startsWith('http') ? cleanUrl : 'https://' + cleanUrl;
+
       const proxies = [
+        // 1. Jina Reader HTML mode (Clean pre-rendered HTML)
         async () => {
-          const res = await fetch(cleanUrl, { mode: 'cors' });
+          const res = await this.fetchWithTimeout('https://r.jina.ai/' + jinaTarget, {
+            headers: {
+              'X-Return-Format': 'html',
+              'X-No-Cache': 'true'
+            }
+          }, 8000);
+          if (res.ok) {
+            const html = await res.text();
+            if (html && html.includes('<')) return html;
+          }
+          throw new Error('Jina HTML failed');
+        },
+        // 2. AllOrigins JSON API
+        async () => {
+          const res = await this.fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(cleanUrl)}`, {}, 7000);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.contents && data.contents.length > 50) return data.contents;
+          }
+          throw new Error('AllOrigins failed');
+        },
+        // 3. Direct CORS fetch
+        async () => {
+          const res = await this.fetchWithTimeout(cleanUrl, { mode: 'cors' }, 4000);
           if (res.ok) return await res.text();
           throw new Error('Direct fetch failed');
         },
+        // 4. CodeTabs CORS Proxy
         async () => {
-          const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`);
-          if (res.ok) return await res.text();
+          const res = await this.fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`, {}, 6000);
+          if (res.ok) {
+            const html = await res.text();
+            if (html && html.length > 50) return html;
+          }
           throw new Error('CodeTabs failed');
         },
+        // 5. Jina Reader Markdown fallback
         async () => {
-          const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`);
-          if (res.ok) return await res.text();
-          throw new Error('AllOrigins failed');
-        },
-        async () => {
-          const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(cleanUrl)}`);
-          if (res.ok) return await res.text();
-          throw new Error('CorsProxy failed');
-        },
-        async () => {
-          const jinaTarget = cleanUrl.startsWith('http') ? cleanUrl : 'https://' + cleanUrl;
-          const res = await fetch('https://r.jina.ai/' + jinaTarget, { headers: { 'X-No-Cache': 'true' } });
+          const res = await this.fetchWithTimeout('https://r.jina.ai/' + jinaTarget, { headers: { 'X-No-Cache': 'true' } }, 8000);
           if (res.ok) {
             const md = await res.text();
             return { isMarkdown: true, content: md };
           }
-          throw new Error('Jina failed');
+          throw new Error('Jina Markdown failed');
         }
       ];
 
       for (const p of proxies) {
         try {
           const data = await p();
+          if (data && typeof data === 'string' && data.length > 50 && data.includes('<')) {
+            return this.sanitizeRawHTML(data, cleanUrl, preserveStyles);
+          }
           if (data && typeof data === 'object' && data.isMarkdown) {
             return this.parseMarkdownOrHTML(data.content, cleanUrl, preserveStyles);
-          }
-          if (typeof data === 'string' && data.length > 50 && data.includes('<')) {
-            return this.sanitizeRawHTML(data, cleanUrl, preserveStyles);
           }
         } catch (e) {}
       }
 
       throw new Error(`Zabezpečení webu "${cleanUrl}" zabránilo přímému stažení. Otevřete stránku, zkopírujte text (Ctrl+A, Ctrl+C) a vložte jej do textového pole.`);
     }
+
 
     static sanitizeRawHTML(htmlString, sourceUrl = '', preserveStyles = true) {
       const parser = new DOMParser();
@@ -535,23 +588,35 @@
         }
       } catch (e) {}
 
-      this._extractWebPalette(doc);
+      // 1. Extract Design Tokens (Brand Color, Google Fonts, Typography) before stripping
+      const styleTokens = this._extractWebTokens(doc, sourceUrl);
 
-      if (preserveStyles) {
-        this._extractAndInjectStyles(doc);
-      }
-
+      // 2. Resolve all image URLs to absolute paths
       this._resolveAllImages(doc, baseUrl);
 
+      // 3. Selective Article Root Detection (Prevents Readability from cutting off Gutenberg/multi-block articles)
+      let title = '';
+      const h1El = doc.querySelector('h1.entry-title, .entry-header h1, h1, title');
+      if (h1El) title = h1El.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').replace(/\s*[-–|].*$/, '').trim();
+      if (!title && sourceUrl) {
+        try {
+          const u = new URL(sourceUrl);
+          title = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || u.hostname).replace(/[-_]/g, ' ');
+        } catch (e) {
+          title = 'Nová kapitola';
+        }
+      }
+      if (!title) title = 'Nová kapitola';
+
       const unwantedSelectors = [
-        'script', 'noscript', 'nav', 'header', 'footer',
+        'script', 'style', 'noscript', 'nav', 'header', 'footer', 'aside',
         '.navbar', '.nav', '.footer', '.header', '.ad', '.ads', '.advertisement',
-        '.cookie-banner', '.cookie-consent', '.popup', '.modal', '.sidebar', '.aside',
+        '.cookie-banner', '.cookie-consent', '.popup', '.modal', '.sidebar',
         '.social-share', '.share-buttons', '.comments', '#comments', '.newsletter-signup',
-        '.mw-jump-link', '.mw-editsection', '.reference', '.reflist', '.hidden',
-        '.screen-reader-text',
+        '.mw-jump-link', '.mw-editsection', '.reference', '.reflist', '.hidden', '.noprint',
+        '.navbox', '.vertical-navbox', '.catlinks', '#catlinks',
         '.breadcrumbs', '.breadcrumb', '#breadcrumbs', '.kadence-breadcrumbs', '#kadence-breadcrumbs',
-        '.yoast-breadcrumbs', '.rank-math-breadcrumb', '.schema-breadcrumb', '[aria-label="breadcrumbs"]', '[aria-label="Breadcrumb"]',
+        '.yoast-breadcrumbs', '.rank-math-breadcrumb', '.schema-breadcrumb', '[aria-label*="breadcrumb" i]',
         '.menu', '.menu-item', '.site-navigation', '#site-navigation', '.main-navigation', '.sub-menu',
         '.wp-block-navigation', '.wp-block-pages-list', '.widget_nav_menu', '.site-header', '#masthead',
         '.site-footer', '#colophon', '.mobile-header', '#mobile-header',
@@ -564,28 +629,58 @@
         '.toc', '#toc', '.table-of-contents', '.ez-toc-container', '.lwptoc', '.rank-math-toc', '.wp-block-kadence-table-of-contents'
       ];
 
-      unwantedSelectors.forEach(sel => {
-        doc.querySelectorAll(sel).forEach(el => el.remove());
-      });
+      // Identify the semantic main container
+      let mainContainer = null;
+      const semanticSelectors = [
+        '.entry-content',
+        '.single-content',
+        '.post-content',
+        '.article-content',
+        '.post_content',
+        '.article-body',
+        '.story-body',
+        '.mw-parser-output',
+        'article',
+        'main'
+      ];
 
-      const mainEl = doc.querySelector('.entry-content, .single-content, .post-content, .article-content, .post_content, .article-body, .story-body, .wysiwyg, .mw-parser-output')
-                  || doc.querySelector('article, main, #content, .content')
-                  || doc.body;
-
-      let title = '';
-      const h1El = doc.querySelector('h1.entry-title, .entry-header h1, h1, title');
-      if (h1El) {
-        title = h1El.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').replace(/\s*[-–|].*$/, '').trim();
-      }
-      if (!title && sourceUrl) {
-        try {
-          const u = new URL(sourceUrl);
-          title = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || u.hostname).replace(/[-_]/g, ' ');
-        } catch (e) {
-          title = 'Nová kapitola';
+      for (const sel of semanticSelectors) {
+        const found = doc.querySelector(sel);
+        if (found && found.textContent.trim().length > 150) {
+          mainContainer = found;
+          break;
         }
       }
-      if (!title) title = 'Nová kapitola';
+
+      // If no standard article container found and not preserveStyles, try Readability
+      if (!mainContainer && typeof Readability !== 'undefined' && !preserveStyles) {
+        try {
+          const docClone = doc.cloneNode(true);
+          const reader = new Readability(docClone, {
+            keepClasses: true,
+            charThreshold: 0,
+            nbTopCandidates: 10,
+            classesToPreserve: ['table', 'wp-block-table', 'wp-block-image', 'wp-block-embed', 'wp-block-embed-youtube', 'audio-player', 'gallery', 'lead', 'perex', 'intro', 'callout', 'alert']
+          });
+          const article = reader.parse();
+          if (article && article.content) {
+            const articleDoc = parser.parseFromString(article.content, 'text/html');
+            mainContainer = articleDoc.body;
+            if (!title && article.title) title = article.title.trim();
+          }
+        } catch (e) {
+          console.warn('Readability parse fallback error:', e);
+        }
+      }
+
+      if (!mainContainer) {
+        mainContainer = doc.body;
+      }
+
+      // Clean unwanted elements from the selected main container
+      unwantedSelectors.forEach(sel => {
+        mainContainer.querySelectorAll(sel).forEach(el => el.remove());
+      });
 
       const cleanContainer = document.createElement('div');
       cleanContainer.className = 'doc-content';
@@ -593,20 +688,46 @@
       const titleH1 = document.createElement('h1');
       titleH1.className = 'doc-element doc-h1';
       titleH1.textContent = title;
+      
+      const originalH1 = doc.querySelector('h1');
+      if (originalH1) {
+        this._preserveElementStyles(titleH1, originalH1);
+      }
       cleanContainer.appendChild(titleH1);
 
+      // Check author/byline metadata
+      const authorMeta = doc.querySelector('meta[name="author"], meta[property="article:author"], .author-name, .byline, .author');
+      const authorName = authorMeta ? (authorMeta.getAttribute('content') || authorMeta.textContent.trim()) : '';
+      if (authorName && authorName.length < 50) {
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'doc-source-meta doc-element';
+        metaDiv.innerHTML = `✍️ <strong>${this._escapeHTML(authorName)}</strong>${sourceUrl ? ` &bull; <em>${this._escapeHTML(new URL(sourceUrl, window.location.href).hostname)}</em>` : ''}`;
+        cleanContainer.appendChild(metaDiv);
+      }
+
       const flatElements = [];
-      this._flattenDomBlocks(mainEl, flatElements, preserveStyles, baseUrl);
+      this._flattenDomBlocks(mainContainer, flatElements, preserveStyles, baseUrl);
+
+      // Reorder if infobox is the very first element: place first paragraph before infobox for balanced Page 1
+      if (flatElements.length > 1 && flatElements[0].classList?.contains('doc-table-infobox')) {
+        const firstPIdx = flatElements.findIndex(el => el.tagName === 'P');
+        if (firstPIdx > 0) {
+          const firstP = flatElements.splice(firstPIdx, 1)[0];
+          flatElements.unshift(firstP);
+        }
+      }
 
       flatElements.forEach(el => {
         const textContent = el.textContent.trim();
         const textLower = textContent.toLowerCase();
         const titleLower = title.toLowerCase();
 
-        if ((el.tagName === 'H1' || el.tagName === 'H2') && (textLower === titleLower || textLower.startsWith(titleLower))) {
+        // Skip duplicated title heading
+        if (el.tagName === 'H1' && (textLower === titleLower || textLower.startsWith(titleLower))) {
           return;
         }
 
+        // Skip metadata lines from crawlers
         if (/^(?:Title|URL Source|Published Time|Markdown Content|Image Sources?):\s*/i.test(textContent)) {
           return;
         }
@@ -615,7 +736,7 @@
           return;
         }
 
-        if (/^(?:Předchozí článek|Následující článek|Související články|Rubriky|Kategorie|Štítky):/i.test(textContent)) {
+        if (/^(?:Předchozí článek|Následující článek|Související články|Rubriky|Kategorie|Štítky|Kam dál|Podobné příspěvky):/i.test(textContent)) {
           return;
         }
 
@@ -625,8 +746,86 @@
       return {
         title: title,
         sourceUrl: sourceUrl,
-        htmlContent: cleanContainer.innerHTML
+        htmlContent: cleanContainer.innerHTML,
+        styleTokens: styleTokens
       };
+    }
+
+    static _preserveElementStyles(targetElement, sourceNode) {
+      if (!sourceNode || !targetElement) return;
+
+      const styleAttr = sourceNode.getAttribute('style') || '';
+      const classList = Array.from(sourceNode.classList || []);
+      const preservedStyles = [];
+
+      // 1. Direct inline styles extraction
+      if (styleAttr) {
+        const safeProps = [
+          'color', 'background-color', 'background', 'border', 'border-left',
+          'border-right', 'border-top', 'border-bottom', 'border-color', 'border-radius',
+          'border-style', 'border-width', 'font-weight', 'font-style', 'font-family',
+          'font-size', 'line-height', 'text-align', 'text-decoration', 'letter-spacing',
+          'text-transform', 'padding', 'padding-left', 'padding-right', 'padding-top', 'padding-bottom',
+          'margin-top', 'margin-bottom'
+        ];
+
+        const decls = styleAttr.split(';');
+        decls.forEach(d => {
+          const idx = d.indexOf(':');
+          if (idx !== -1) {
+            const prop = d.substring(0, idx).trim().toLowerCase();
+            const val = d.substring(idx + 1).trim();
+            if (safeProps.includes(prop) && !val.includes('url(') && !val.includes('javascript:')) {
+              // Safety check: text color must not be white or ultra-light on white paper unless there is a dark background
+              if (prop === 'color') {
+                const hex = ContentExtractor._normalizeColorToHex(val);
+                if (hex) {
+                  const hsl = ContentExtractor._hexToHSL(hex);
+                  if (hsl && hsl.l > 0.70 && !styleAttr.includes('background')) {
+                    return; // Skip invisible light/white text on white paper!
+                  }
+                }
+              }
+              // Safety check: inside infobox table, avoid overriding with garish inline backgrounds
+              if (prop.startsWith('background') && (targetElement.tagName === 'TH' || targetElement.tagName === 'TD') && targetElement.closest('.doc-table-infobox')) {
+                return;
+              }
+              preservedStyles.push(`${prop}: ${val}`);
+            }
+          }
+        });
+      }
+
+      // 2. Alignment classes
+      if (classList.some(c => c.includes('has-text-align-center') || c.includes('text-center') || c.includes('aligncenter'))) {
+        targetElement.setAttribute('data-align', 'center');
+        preservedStyles.push('text-align: center');
+      } else if (classList.some(c => c.includes('has-text-align-right') || c.includes('text-right') || c.includes('alignright'))) {
+        targetElement.setAttribute('data-align', 'right');
+        preservedStyles.push('text-align: right');
+      } else if (classList.some(c => c.includes('has-text-align-justify') || c.includes('text-justify'))) {
+        targetElement.setAttribute('data-align', 'justify');
+        preservedStyles.push('text-align: justify');
+      }
+
+      // 3. Lead paragraph / Perex detection
+      if (classList.some(c => /^(?:lead|perex|intro|entry-intro|has-large-font-size|is-style-lead)$/i.test(c))) {
+        targetElement.classList.add('lead-paragraph');
+      }
+
+      // 4. Highlight / Accent text
+      if (classList.some(c => /has-accent|has-primary|highlight/i.test(c))) {
+        targetElement.classList.add('doc-highlight');
+      }
+
+      if (preservedStyles.length > 0) {
+        const existing = targetElement.getAttribute('style') || '';
+        const merged = existing ? `${existing}; ${preservedStyles.join('; ')}` : preservedStyles.join('; ');
+        targetElement.setAttribute('style', merged);
+        try {
+          targetElement.style.cssText = merged;
+        } catch(e) {}
+      }
     }
 
     static _flattenDomBlocks(node, results, preserveStyles = true, baseUrl = '') {
@@ -640,6 +839,25 @@
 
       if (node.classList?.contains('ez-toc-container') || node.classList?.contains('lwptoc') || node.classList?.contains('table-of-contents')) {
         return;
+      }
+
+      // WordPress Kadence Infoboxy, Callouty a Alert boxy
+      if (node.classList?.contains('wp-block-kadence-infobox') ||
+          node.classList?.contains('callout') ||
+          node.classList?.contains('alert') ||
+          node.classList?.contains('notice') ||
+          node.classList?.contains('infobox-wrapper') ||
+          node.classList?.contains('doc-box') ||
+          (node.classList?.contains('wp-block-group') && node.getAttribute('style')?.includes('background'))) {
+        const calloutDiv = document.createElement('div');
+        calloutDiv.className = 'doc-callout doc-element';
+        calloutDiv.setAttribute('data-block-type', 'callout');
+        this._preserveElementStyles(calloutDiv, node);
+        calloutDiv.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+        if (calloutDiv.textContent.trim()) {
+          results.push(calloutDiv);
+          return;
+        }
       }
 
       if (tag === 'iframe' || node.classList?.contains('wp-block-embed') || node.classList?.contains('wp-block-embed-youtube')) {
@@ -711,15 +929,58 @@
           const h = document.createElement(tag);
           h.className = `doc-element doc-${tag}`;
           h.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+          this._preserveElementStyles(h, node);
           results.push(h);
         }
         return;
       }
 
+      // Wikipedia & Gutenberg Image Galleries
+      if (node.classList?.contains('gallery') || node.classList?.contains('wp-block-gallery') || node.classList?.contains('mw-gallery-traditional') || node.classList?.contains('gallerybox')) {
+        const galleryItems = Array.from(node.querySelectorAll('li.gallerybox, .gallery-item, .wp-block-image, figure'));
+        if (galleryItems.length > 0) {
+          const grid = document.createElement('div');
+          grid.className = 'doc-element doc-gallery-grid';
+          grid.setAttribute('data-block-type', 'figure');
+          
+          galleryItems.forEach(item => {
+            const img = item.querySelector('img');
+            if (img) {
+              let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
+              if (src.startsWith('//')) src = 'https:' + src;
+              else if (src && !src.startsWith('http://') && !src.startsWith('https://') && baseUrl) {
+                try { src = new URL(src, baseUrl).href; } catch(e) {}
+              }
+              const cap = item.querySelector('.gallerytext, figcaption, .wp-element-caption')?.textContent?.trim() || img.getAttribute('alt') || '';
+              
+              if (src) {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'doc-gallery-item';
+                itemDiv.innerHTML = `
+                  <img src="${src}" alt="${this._escapeHTML(cap)}" loading="lazy" onerror="this.style.display='none'">
+                  ${cap ? `<div class="doc-gallery-cap">${this._escapeHTML(cap)}</div>` : ''}
+                `;
+                grid.appendChild(itemDiv);
+              }
+            }
+          });
+          if (grid.children.length > 0) {
+            results.push(grid);
+            return;
+          }
+        }
+      }
+
       if (tag === 'table') {
+        // Discard navboxes
+        if (node.classList?.contains('navbox') || node.classList?.contains('vertical-navbox') || node.classList?.contains('catlinks')) {
+          return;
+        }
+
+        const isInfobox = node.classList?.contains('infobox') || node.classList?.contains('sidebar');
         const tbl = node.cloneNode(true);
-        tbl.className = 'doc-element doc-table';
-        tbl.removeAttribute('style');
+        tbl.className = 'doc-element doc-table' + (isInfobox ? ' doc-table-infobox' : '');
+        this._preserveElementStyles(tbl, node);
 
         tbl.querySelectorAll('img').forEach(img => {
           let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
@@ -733,6 +994,17 @@
           img.setAttribute('src', src);
           img.setAttribute('loading', 'lazy');
           img.setAttribute('onerror', "this.style.display='none'");
+          img.removeAttribute('srcset');
+        });
+
+        // Preserve table cell styles (background, text color, alignment, borders)
+        const originalCells = Array.from(node.querySelectorAll('th, td'));
+        const clonedCells = Array.from(tbl.querySelectorAll('th, td'));
+        clonedCells.forEach((cell, idx) => {
+          const orig = originalCells[idx];
+          if (orig) {
+            this._preserveElementStyles(cell, orig);
+          }
         });
 
         const figWrapper = document.createElement('figure');
@@ -748,7 +1020,7 @@
         if (tableInside) {
           const tbl = tableInside.cloneNode(true);
           tbl.className = 'doc-element doc-table';
-          tbl.removeAttribute('style');
+          this._preserveElementStyles(tbl, tableInside);
           tbl.querySelectorAll('img').forEach(img => {
             let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
             if (src.startsWith('//')) {
@@ -802,6 +1074,7 @@
             const p = document.createElement('p');
             p.className = 'doc-element';
             p.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+            this._preserveElementStyles(p, node);
             results.push(p);
           }
         }
@@ -819,12 +1092,18 @@
         if (!isNavList && items.length > 0) {
           const list = document.createElement(tag);
           list.className = 'doc-element';
+          this._preserveElementStyles(list, node);
           items.forEach(li => {
             const cleanLi = document.createElement('li');
             cleanLi.innerHTML = this._cleanInlineContent(li.innerHTML, baseUrl);
-            list.appendChild(cleanLi);
+            this._preserveElementStyles(cleanLi, li);
+            if (cleanLi.textContent.trim()) {
+              list.appendChild(cleanLi);
+            }
           });
-          results.push(list);
+          if (list.children.length > 0) {
+            results.push(list);
+          }
         }
         return;
       }
@@ -833,6 +1112,7 @@
         const bq = document.createElement('blockquote');
         bq.className = 'doc-element';
         bq.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+        this._preserveElementStyles(bq, node);
         results.push(bq);
         return;
       }
@@ -840,7 +1120,8 @@
       if (tag === 'pre') {
         const pre = document.createElement('pre');
         pre.className = 'doc-element';
-        pre.textContent = node.textContent;
+        pre.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+        this._preserveElementStyles(pre, node);
         results.push(pre);
         return;
       }
@@ -864,6 +1145,7 @@
             const p = document.createElement('p');
             p.className = 'doc-element';
             p.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
+            this._preserveElementStyles(p, node);
             results.push(p);
           }
         }
@@ -933,55 +1215,398 @@
       });
     }
 
-    static _extractAndInjectStyles(doc) {
-      const styles = doc.querySelectorAll('style, link[rel="stylesheet"][href*="fonts.googleapis.com"]');
-      let combinedCss = '';
+    static _resolveCssValue(val, cssVars) {
+      if (!val) return '';
+      let str = val.trim();
+      const varMatch = str.match(/var\(\s*(--[a-zA-Z0-9_-]+)(?:\s*,\s*([^)]+))?\s*\)/i);
+      if (varMatch) {
+        const varName = varMatch[1];
+        const fallback = varMatch[2] ? varMatch[2].trim() : '';
+        if (cssVars && cssVars.has(varName)) {
+          return this._resolveCssValue(cssVars.get(varName), cssVars);
+        }
+        if (fallback) {
+          return this._resolveCssValue(fallback, cssVars);
+        }
+      }
+      return str;
+    }
 
-      styles.forEach(s => {
-        if (s.tagName === 'LINK') {
-          const href = s.getAttribute('href');
-          if (href && !document.querySelector(`link[href="${href}"]`)) {
-            const fontLink = document.createElement('link');
-            fontLink.rel = 'stylesheet';
-            fontLink.href = href;
-            document.head.appendChild(fontLink);
+    static _extractWebTokens(doc, sourceUrl = '') {
+      try {
+        const isWikipedia = sourceUrl.includes('wikipedia.org') || !!doc.querySelector('.mw-parser-output');
+        const isSaxoskola = sourceUrl.includes('saxoskola.cz');
+
+        // 1. Collect all CSS custom properties (variables) from <style> tags
+        const cssVars = new Map();
+        const styleTags = Array.from(doc.querySelectorAll('style'));
+        styleTags.forEach(s => {
+          const text = s.textContent || '';
+          const declMatches = text.matchAll(/(--[a-zA-Z0-9_-]+)\s*:\s*([^;!}\n]+)/gi);
+          for (const m of declMatches) {
+            cssVars.set(m[1].trim(), m[2].trim());
           }
-        } else {
-          const text = s.textContent;
-          if (!text.includes('position:fixed') && !text.includes('position: fixed')) {
-            combinedCss += text + '\n';
+        });
+
+        const colorScores = new Map();
+        const addColorScore = (rawColor, weight = 1) => {
+          if (!rawColor) return;
+          const resolved = this._resolveCssValue(rawColor, cssVars);
+          const hex = this._normalizeColorToHex(resolved);
+          if (!hex) return;
+
+          const hsl = this._hexToHSL(hex);
+          if (!hsl) return;
+
+          // Must have color saturation (>= 15%) and balanced lightness (10% <= L <= 82%)
+          if (hsl.s < 0.15 || hsl.l < 0.10 || hsl.l > 0.82) return;
+
+          const current = colorScores.get(hex) || 0;
+          colorScores.set(hex, current + weight);
+        };
+
+        // 2. Check meta tags
+        const metaColor = doc.querySelector('meta[name="theme-color"], meta[property="og:theme_color"], meta[name="msapplication-TileColor"], meta[name="msapplication-navbutton-color"]');
+        if (metaColor && metaColor.getAttribute('content')) {
+          addColorScore(metaColor.getAttribute('content'), 20);
+        }
+
+        // 3. Scan CSS variables and style rules in <style>
+        cssVars.forEach((rawVal, varName) => {
+          if (/(?:palette[1-3]|primary|brand|accent|theme|heading|main)/i.test(varName)) {
+            addColorScore(rawVal, 20);
+          }
+        });
+
+        styleTags.forEach(s => {
+          const text = s.textContent || '';
+          const headingRules = text.matchAll(/(?:h[1-3]|\.entry-title|\.site-header|header|\.navbar|\.nav-link|\.btn-primary|\.wp-block-button)\s*\{[^}]*?(?:color|background(?:-color)?|border-color)\s*:\s*([^;!}\n]+)/gi);
+          for (const m of headingRules) {
+            addColorScore(m[1], 10);
+          }
+
+          const generalMatches = text.matchAll(/(?:color|background(?:-color)?|border-color)\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]+\))/gi);
+          for (const m of generalMatches) {
+            addColorScore(m[1], 1);
+          }
+        });
+
+        // 4. Scan inline style attributes
+        doc.querySelectorAll('header, nav, h1, h2, h3, .navbar, .header, a, button, [class*="accent"], [class*="brand"]').forEach(el => {
+          const style = el.getAttribute('style') || '';
+          const inlineMatches = style.matchAll(/(?:color|background(?:-color)?|border-color)\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]+\))/gi);
+          for (const m of inlineMatches) {
+            addColorScore(m[1], 4);
+          }
+        });
+
+        // Find highest scoring brand color
+        let bestBrandColor = isWikipedia ? '#3366cc' : (isSaxoskola ? '#2a4861' : '#0ea5e9');
+        let highestScore = 0;
+
+        if (!isWikipedia) {
+          for (const [color, score] of colorScores.entries()) {
+            if (score > highestScore) {
+              highestScore = score;
+              bestBrandColor = color;
+            }
           }
         }
-      });
 
-      if (combinedCss) {
-        let styleTag = document.getElementById('doc-imported-web-styles');
-        if (!styleTag) {
-          styleTag = document.createElement('style');
-          styleTag.id = 'doc-imported-web-styles';
-          document.head.appendChild(styleTag);
+        // Generate matching pastel background and border tints
+        const hsl = this._hexToHSL(bestBrandColor) || { h: 210, s: 0.6, l: 0.4 };
+        const lightBg = isWikipedia ? '#f8f9fa' : this._hslToHex(hsl.h, Math.min(hsl.s, 0.35), 0.97);
+        const lightBorder = isWikipedia ? '#a2a9b1' : this._hslToHex(hsl.h, Math.min(hsl.s, 0.45), 0.85);
+        const secondaryColor = isWikipedia ? '#202122' : this._hslToHex((hsl.h + 25) % 360, Math.min(hsl.s * 1.1, 0.9), Math.max(hsl.l * 0.85, 0.2));
+        const headingColor = isWikipedia ? '#000000' : bestBrandColor;
+
+        // 5. WEB FONTS & TYPOGRAPHY EXTRACTION
+        let extractedFont = isWikipedia ? '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Lato, Helvetica, Arial, sans-serif' : '';
+        let extractedHeadingFont = isWikipedia ? 'Linux Libertine' : '';
+
+        // Check Google Font links
+        const fontLinks = Array.from(doc.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'));
+        fontLinks.forEach(link => {
+          const href = link.getAttribute('href') || '';
+          if (href) {
+            const match = href.match(/family=([^:&]+)/i);
+            if (match && match[1]) {
+              const rawName = decodeURIComponent(match[1]).replace(/\+/g, ' ');
+              if (!extractedFont && !isWikipedia) extractedFont = rawName.split(':')[0].trim();
+              else if (!extractedHeadingFont && !isWikipedia) extractedHeadingFont = rawName.split(':')[0].trim();
+            }
+          }
+        });
+
+        // Scan font-family in CSS variables and rules
+        if (!isWikipedia) {
+          if (cssVars.has('--global-heading-font-family')) {
+            extractedHeadingFont = cssVars.get('--global-heading-font-family').replace(/['"]/g, '').split(',')[0].trim();
+          }
+          if (cssVars.has('--global-body-font-family')) {
+            extractedFont = cssVars.get('--global-body-font-family').replace(/['"]/g, '').split(',')[0].trim();
+          }
+
+          styleTags.forEach(s => {
+            const text = s.textContent || '';
+            if (!extractedHeadingFont) {
+              const mHead = text.match(/(?:h1|h2|h3|\.entry-title)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/i);
+              if (mHead && mHead[1]) {
+                const resolved = this._resolveCssValue(mHead[1], cssVars).replace(/['"]/g, '').split(',')[0].trim();
+                if (!['inherit', 'initial', 'sans-serif', 'serif', 'monospace', 'system-ui'].includes(resolved.toLowerCase())) {
+                  extractedHeadingFont = resolved;
+                }
+              }
+            }
+            if (!extractedFont) {
+              const mBody = text.match(/(?:body|\.entry-content|p)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/i);
+              if (mBody && mBody[1]) {
+                const resolved = this._resolveCssValue(mBody[1], cssVars).replace(/['"]/g, '').split(',')[0].trim();
+                if (!['inherit', 'initial', 'sans-serif', 'serif', 'monospace', 'system-ui'].includes(resolved.toLowerCase())) {
+                  extractedFont = resolved;
+                }
+              }
+            }
+          });
         }
-        styleTag.textContent = combinedCss;
+
+        // Scan specific element colors from CSS with variable resolution
+        let h1Color = isWikipedia ? '#000000' : bestBrandColor;
+        let h2Color = isWikipedia ? '#000000' : bestBrandColor;
+        let h3Color = isWikipedia ? '#000000' : bestBrandColor;
+        let pColor = isWikipedia ? '#202122' : '#334155';
+
+        if (!isWikipedia) {
+          styleTags.forEach(s => {
+            const text = s.textContent || '';
+            const mH1 = text.match(/(?:h1|\.entry-title|\.site-title)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
+            if (mH1 && mH1[1]) {
+              const resolved = this._resolveCssValue(mH1[1], cssVars);
+              const hex = this._normalizeColorToHex(resolved);
+              if (hex) {
+                const hsl = this._hexToHSL(hex);
+                if (hsl && hsl.l <= 0.55) h1Color = hex;
+              }
+            }
+
+            const mH2 = text.match(/(?:h2|\.entry-content\s+h2)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
+            if (mH2 && mH2[1]) {
+              const resolved = this._resolveCssValue(mH2[1], cssVars);
+              const hex = this._normalizeColorToHex(resolved);
+              if (hex) {
+                const hsl = this._hexToHSL(hex);
+                if (hsl && hsl.l <= 0.55) h2Color = hex;
+              }
+            }
+
+            const mH3 = text.match(/(?:h3|\.entry-content\s+h3)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
+            if (mH3 && mH3[1]) {
+              const resolved = this._resolveCssValue(mH3[1], cssVars);
+              const hex = this._normalizeColorToHex(resolved);
+              if (hex) {
+                const hsl = this._hexToHSL(hex);
+                if (hsl && hsl.l <= 0.55) h3Color = hex;
+              }
+            }
+
+            const mP = text.match(/(?:\.entry-content\s+p|article\s+p|\.post-content\s+p|main\s+p)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
+            if (mP && mP[1]) {
+              const resolved = this._resolveCssValue(mP[1], cssVars);
+              const hex = this._normalizeColorToHex(resolved);
+              if (hex) {
+                const hsl = this._hexToHSL(hex);
+                if (hsl && hsl.l <= 0.35) pColor = hex;
+              }
+            }
+          });
+        }
+
+        const cleanFontName = extractedFont ? extractedFont.split(',')[0].replace(/['"]/g, '').trim() : (isWikipedia ? 'Linux Libertine' : 'Barlow');
+        const cleanHeadingFont = extractedHeadingFont ? extractedHeadingFont.split(',')[0].replace(/['"]/g, '').trim() : cleanFontName;
+
+        // Ensure real fonts load via Google Fonts
+        this._ensureGoogleFontLoaded(cleanFontName);
+        if (cleanHeadingFont !== cleanFontName) {
+          this._ensureGoogleFontLoaded(cleanHeadingFont);
+        }
+
+        // Apply to CSS variables on root if document is available
+        if (typeof document !== 'undefined' && document.documentElement) {
+          try {
+            document.documentElement.style.setProperty('--doc-primary', bestBrandColor);
+            document.documentElement.style.setProperty('--web-extracted-primary', bestBrandColor);
+            document.documentElement.style.setProperty('--web-extracted-bg', lightBg);
+            document.documentElement.style.setProperty('--web-extracted-border', lightBorder);
+            document.documentElement.style.setProperty('--web-extracted-secondary', secondaryColor);
+            document.documentElement.style.setProperty('--web-extracted-heading', headingColor);
+
+            if (cleanHeadingFont.toLowerCase().includes('libertine') || isWikipedia) {
+              const serifStack = '"Linux Libertine", "Libertinus Serif", "EB Garamond", "Lora", Georgia, "Times New Roman", serif';
+              document.documentElement.style.setProperty('--web-extracted-heading-font', serifStack);
+              document.documentElement.style.setProperty('--doc-font-heading', serifStack);
+            } else {
+              document.documentElement.style.setProperty('--web-extracted-heading-font', `"${cleanHeadingFont}", system-ui, sans-serif`);
+              document.documentElement.style.setProperty('--doc-font-heading', `"${cleanHeadingFont}", system-ui, sans-serif`);
+            }
+
+            document.documentElement.style.setProperty('--web-extracted-font', `"${cleanFontName}", system-ui, sans-serif`);
+            document.documentElement.style.setProperty('--doc-font-family', `"${cleanFontName}", system-ui, sans-serif`);
+            document.documentElement.style.setProperty('--web-h1-color', h1Color);
+            document.documentElement.style.setProperty('--web-h2-color', h2Color);
+            document.documentElement.style.setProperty('--web-h3-color', h3Color);
+            document.documentElement.style.setProperty('--web-p-color', pColor);
+
+            if (document.body) {
+              document.body.setAttribute('data-theme', 'web-original');
+              document.body.setAttribute('data-font', 'web-original');
+            }
+
+            const themeSelect = document.getElementById('sel-preset-template');
+            if (themeSelect) themeSelect.value = 'web-original';
+
+            const fontSelect = document.getElementById('sel-font-family');
+            if (fontSelect) fontSelect.value = 'web-original';
+
+            const brandInput = document.getElementById('input-brand-color');
+            if (brandInput) brandInput.value = bestBrandColor;
+          } catch (e) {}
+        }
+
+        const styleTokens = {
+          brandColor: bestBrandColor,
+          lightBg: lightBg,
+          lightBorder: lightBorder,
+          secondaryColor: secondaryColor,
+          headingColor: headingColor,
+          h1Color: h1Color,
+          h2Color: h2Color,
+          h3Color: h3Color,
+          pColor: pColor,
+          bodyFont: cleanFontName,
+          headingFont: cleanHeadingFont,
+          sourceHost: sourceUrl ? new URL(sourceUrl, window.location.href).hostname : ''
+        };
+
+        return styleTokens;
+      } catch (e) {
+        console.warn('Error in _extractWebTokens:', e);
+        return {
+          brandColor: '#0284c7',
+          lightBg: '#f0f9ff',
+          lightBorder: '#bae6fd',
+          secondaryColor: '#0369a1',
+          headingColor: '#0f172a',
+          h1Color: '#0f172a',
+          h2Color: '#0284c7',
+          h3Color: '#0369a1',
+          pColor: '#1e293b',
+          bodyFont: 'Inter',
+          headingFont: 'Outfit',
+          sourceHost: ''
+        };
       }
     }
 
-    static _extractWebPalette(doc) {
-      const themeMeta = doc.querySelector('meta[name="theme-color"]');
-      let brandColor = themeMeta ? themeMeta.getAttribute('content') : '#0284c7';
-      if (!brandColor || brandColor === '#ffffff' || brandColor === '#000000') brandColor = '#0284c7';
+    static _ensureGoogleFontLoaded(fontName) {
+      if (!fontName || typeof document === 'undefined' || !document.head) return;
+      const cleanName = fontName.split(',')[0].replace(/['"]/g, '').trim();
+      const standardFonts = [
+        'system-ui', 'sans-serif', 'serif', 'monospace', 'initial', 'inherit',
+        'arial', 'helvetica', 'times new roman', 'times', 'georgia', 'courier', 'courier new', 'verdana', 'tahoma', 'trebuchet ms'
+      ];
+      if (standardFonts.includes(cleanName.toLowerCase())) return;
 
-      document.documentElement.style.setProperty('--web-extracted-primary', brandColor);
-      document.documentElement.style.setProperty('--web-extracted-secondary', brandColor);
-      document.documentElement.style.setProperty('--web-extracted-heading', '#0f172a');
-      document.documentElement.style.setProperty('--web-extracted-text', '#1e293b');
-      document.documentElement.style.setProperty('--web-extracted-bg', '#f8fafc');
-      document.documentElement.style.setProperty('--web-extracted-border', '#cbd5e1');
+      if (cleanName.toLowerCase().includes('libertine')) {
+        const linkId = 'gfont-libertine-serif';
+        if (!document.getElementById(linkId)) {
+          const link = document.createElement('link');
+          link.id = linkId;
+          link.rel = 'stylesheet';
+          link.href = 'https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600&family=Lora:ital,wght@0,400;0,600;0,700;1,400&display=swap';
+          document.head.appendChild(link);
+        }
+        return;
+      }
 
-      const brandInput = document.getElementById('input-brand-color');
-      if (brandInput && brandColor.startsWith('#')) {
-        brandInput.value = brandColor;
+      const linkId = 'gfont-' + cleanName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      if (!document.getElementById(linkId)) {
+        try {
+          const link = document.createElement('link');
+          link.id = linkId;
+          link.rel = 'stylesheet';
+          link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(cleanName)}:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,700&display=swap`;
+          document.head.appendChild(link);
+        } catch(e) {}
       }
     }
+
+    static _normalizeColorToHex(colorStr) {
+      if (!colorStr) return '';
+      const c = colorStr.trim();
+      if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)) {
+        if (c.length === 4) {
+          return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+        }
+        return c;
+      }
+      if (c.startsWith('rgb')) {
+        const nums = c.match(/\d+/g);
+        if (nums && nums.length >= 3) {
+          const r = parseInt(nums[0]).toString(16).padStart(2, '0');
+          const g = parseInt(nums[1]).toString(16).padStart(2, '0');
+          const b = parseInt(nums[2]).toString(16).padStart(2, '0');
+          return `#${r}${g}${b}`;
+        }
+      }
+      return '';
+    }
+
+    static _hexToHSL(hex) {
+      let c = hex.replace('#', '');
+      if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+      if (c.length !== 6) return null;
+
+      const r = parseInt(c.substring(0, 2), 16) / 255;
+      const g = parseInt(c.substring(2, 4), 16) / 255;
+      const b = parseInt(c.substring(4, 6), 16) / 255;
+
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      let h = 0, s = 0, l = (max + min) / 2;
+
+      if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+      }
+      return { h: Math.round(h * 360), s, l };
+    }
+
+    static _hslToHex(h, s, l) {
+      h = h % 360;
+      if (h < 0) h += 360;
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+      const m = l - c / 2;
+      let r = 0, g = 0, b = 0;
+
+      if (0 <= h && h < 60) { r = c; g = x; b = 0; }
+      else if (60 <= h && h < 120) { r = x; g = c; b = 0; }
+      else if (120 <= h && h < 180) { r = 0; g = c; b = x; }
+      else if (180 <= h && h < 240) { r = 0; g = x; b = c; }
+      else if (240 <= h && h < 300) { r = x; g = 0; b = c; }
+      else if (300 <= h && h < 360) { r = c; g = 0; b = x; }
+
+      const toHex = val => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+
 
     static parseMarkdownOrHTML(text, sourceUrl = '', preserveStyles = true) {
       const stripped = this._stripMetadataPreamble(text);
@@ -1127,7 +1752,17 @@
       return {
         title: title || 'Nová kapitola',
         sourceUrl: effectiveSourceUrl,
-        htmlContent: html
+        htmlContent: html,
+        styleTokens: {
+          brandColor: '#0284c7',
+          lightBg: '#f0f9ff',
+          lightBorder: '#bae6fd',
+          secondaryColor: '#0369a1',
+          headingColor: '#0f172a',
+          bodyFont: 'Inter',
+          headingFont: 'Outfit',
+          sourceHost: ''
+        }
       };
     }
 
@@ -1435,7 +2070,7 @@
       this._notify();
     }
 
-    addChapter(title, htmlContent, sourceUrl = '', metadata = {}) {
+    addChapter(title, htmlContent, sourceUrl = '', metadata = {}, styleTokens = null) {
       const cleanTitle = (title || 'Nová kapitola').replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
       const id = 'chap_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
       const rawContent = htmlContent || `<h1 class="doc-element doc-h1">${this._escapeHTML(cleanTitle)}</h1><p class="doc-element">Obsah nové kapitoly...</p>`;
@@ -1449,7 +2084,8 @@
         htmlContent: indexedContent,
         hasCover: metadata.hasCover || false,
         breakBefore: metadata.breakBefore !== undefined ? metadata.breakBefore : true,
-        order: this.chapters.length + 1
+        order: this.chapters.length + 1,
+        styleTokens: styleTokens || metadata.styleTokens || {}
       };
 
       this.chapters.push(chapter);
@@ -1756,7 +2392,16 @@
       this.zoomWrapper.appendChild(currentSheet);
       this.sheets.push(currentSheet);
 
+      const maxLoopIterations = Math.max(500, elements.length * 4);
+      let iterationCount = 0;
+
       for (let i = 0; i < elements.length; i++) {
+        iterationCount++;
+        if (iterationCount > maxLoopIterations) {
+          console.warn('Pagination loop exceeded safety iteration threshold.');
+          break;
+        }
+
         const el = elements[i];
         const cloned = el.cloneNode(true);
         cloned.setAttribute('contenteditable', 'true');
@@ -1794,10 +2439,13 @@
         }
 
         if ((exceeds || headingNearBottom) && currentSheetBody.children.length > 1) {
+          const splitDepth = parseInt(el.getAttribute('data-split-depth') || '0', 10);
+
           // 1. List Item Splitting (<ul>, <ol>)
-          if (exceeds && (cloned.tagName === 'UL' || cloned.tagName === 'OL')) {
+          if (exceeds && splitDepth < 3 && (cloned.tagName === 'UL' || cloned.tagName === 'OL')) {
             const continuationList = this._splitListAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationList) {
+              continuationList.setAttribute('data-split-depth', (splitDepth + 1).toString());
               pageCount++;
               currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
               currentSheetBody = currentSheet.querySelector('.sheet-body');
@@ -1810,9 +2458,10 @@
           }
 
           // 2. Paragraph Text Splitting
-          if (exceeds && (cloned.tagName === 'P' || cloned.tagName === 'BLOCKQUOTE' || (cloned.tagName === 'DIV' && !cloned.classList.contains('doc-callout')))) {
+          if (exceeds && splitDepth < 3 && (cloned.tagName === 'P' || cloned.tagName === 'BLOCKQUOTE' || (cloned.tagName === 'DIV' && !cloned.classList.contains('doc-callout')))) {
             const continuationEl = this._splitParagraphAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationEl) {
+              continuationEl.setAttribute('data-split-depth', (splitDepth + 1).toString());
               pageCount++;
               currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
               currentSheetBody = currentSheet.querySelector('.sheet-body');
@@ -1838,27 +2487,6 @@
 
       document.body.removeChild(sandbox);
       this._updatePageHeadersAndFooters(pageCount, activeChapter);
-
-      // Auto-repaginate after images finish loading
-      const allImgs = Array.from(this.zoomWrapper.querySelectorAll('img'));
-      const pendingImgs = allImgs.filter(img => !img.complete || img.naturalHeight === 0);
-      if (pendingImgs.length > 0 && !this._imgLoadListenerAttached) {
-        this._imgLoadListenerAttached = true;
-        let loaded = 0;
-        const onImgReady = () => {
-          loaded++;
-          if (loaded === pendingImgs.length) {
-            this._imgLoadListenerAttached = false;
-            if (window.app && typeof window.app.repaginate === 'function') {
-              window.app.repaginate();
-            }
-          }
-        };
-        pendingImgs.forEach(img => {
-          img.addEventListener('load', onImgReady, { once: true });
-          img.addEventListener('error', onImgReady, { once: true });
-        });
-      }
 
       // Populate interactive TOC
       if (this.config.enableAutoTOC) {
@@ -1916,8 +2544,10 @@
       let low = 0;
       let high = words.length;
       let bestSplit = 0;
+      let searchSteps = 0;
 
-      while (low <= high) {
+      while (low <= high && searchSteps < 15) {
+        searchSteps++;
         const mid = Math.floor((low + high) / 2);
         pElement.textContent = words.slice(0, mid).join(' ');
         if (!this._checkSheetOverflow(currentSheetBody, availableHeightPx, isMultiColumn)) {
@@ -2166,7 +2796,7 @@
     renderInspector(el) {
       const tag = el.tagName.toLowerCase();
       const isImg = tag === 'img' || tag === 'figure' || el.querySelector('img') !== null;
-      const isText = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'li'].includes(tag);
+      const isText = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'li', 'td', 'th', 'div'].includes(tag);
 
       const blockId = el.getAttribute('data-block-id') || '';
       this.currentInspectedId = blockId;
@@ -2176,6 +2806,21 @@
 
       let currentFontSize = parseInt(window.getComputedStyle(el).fontSize, 10) || 14;
       let currentScale = parseInt(el.getAttribute('data-scale') || '100', 10);
+
+      const compStyle = window.getComputedStyle(el);
+      const isBold = parseInt(compStyle.fontWeight, 10) >= 600 || compStyle.fontWeight === 'bold';
+      const isItalic = compStyle.fontStyle === 'italic';
+      const isUnderline = compStyle.textDecoration.includes('underline');
+
+      const rgbToHex = (col) => {
+        if (!col) return '#0f172a';
+        if (col.startsWith('#')) return col;
+        const rgb = col.match(/\d+/g);
+        if (!rgb || rgb.length < 3) return '#0f172a';
+        return '#' + ((1 << 24) + (parseInt(rgb[0]) << 16) + (parseInt(rgb[1]) << 8) + parseInt(rgb[2])).toString(16).slice(1);
+      };
+
+      const currentColorHex = rgbToHex(el.style.color || compStyle.color);
 
       this.panel.innerHTML = `
         <div class="inspector-header">
@@ -2196,6 +2841,20 @@
               <option value="blockquote" ${tag === 'blockquote' ? 'selected' : ''}>Citace (Quote)</option>
               <option value="pre" ${tag === 'pre' ? 'selected' : ''}>Kód / Monospace</option>
             </select>
+          </div>
+
+          <div class="inspector-section-card ${!isText ? 'inspector-control-disabled' : ''}">
+            <div class="inspector-sec-title">🎨 Barva a styl textu</div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+              <input type="color" id="insp-color-text" value="${currentColorHex}" style="width: 30px; height: 30px; padding: 0; border: none; border-radius: 4px; cursor: pointer;">
+              <span id="insp-color-hex-label" style="font-size: 11px; font-family: monospace; color: var(--ui-text-muted);">${el.style.color ? el.style.color : '(Původní z webu)'}</span>
+              <button class="btn btn-secondary" id="insp-btn-color-reset" style="font-size: 11px; margin-left: auto; padding: 4px 8px;">↺ Obnovit</button>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn btn-secondary ${isBold ? 'active' : ''}" id="insp-btn-bold" style="flex: 1; font-weight: 700;">B</button>
+              <button class="btn btn-secondary ${isItalic ? 'active' : ''}" id="insp-btn-italic" style="flex: 1; font-style: italic;">I</button>
+              <button class="btn btn-secondary ${isUnderline ? 'active' : ''}" id="insp-btn-underline" style="flex: 1; text-decoration: underline;">U</button>
+            </div>
           </div>
 
           <div class="inspector-section-card">
@@ -2277,6 +2936,53 @@
 
     _bindInspectorEvents(el, blockId) {
       document.getElementById('btn-insp-close')?.addEventListener('click', () => this.renderEmpty());
+
+      // 0. Element Color & Typography Controls
+      const colorInput = document.getElementById('insp-color-text');
+      const colorLabel = document.getElementById('insp-color-hex-label');
+      colorInput?.addEventListener('input', (e) => {
+        const val = e.target.value;
+        if (colorLabel) colorLabel.textContent = val;
+        if (this.selectedElement) this.selectedElement.style.color = val;
+        this.onLiveUpdate((target) => { target.style.color = val; }, blockId);
+      });
+      colorInput?.addEventListener('change', (e) => {
+        const val = e.target.value;
+        this.onBlockModified((target) => { target.style.color = val; }, blockId);
+      });
+
+      document.getElementById('insp-btn-color-reset')?.addEventListener('click', () => {
+        if (this.selectedElement) this.selectedElement.style.color = '';
+        if (colorLabel) colorLabel.textContent = '(Výchozí)';
+        this.onBlockModified((target) => { target.style.color = ''; }, blockId);
+      });
+
+      document.getElementById('insp-btn-bold')?.addEventListener('click', (e) => {
+        const btn = e.currentTarget;
+        const willBeBold = !btn.classList.contains('active');
+        btn.classList.toggle('active', willBeBold);
+        this.onBlockModified((target) => {
+          target.style.fontWeight = willBeBold ? 'bold' : 'normal';
+        }, blockId);
+      });
+
+      document.getElementById('insp-btn-italic')?.addEventListener('click', (e) => {
+        const btn = e.currentTarget;
+        const willBeItalic = !btn.classList.contains('active');
+        btn.classList.toggle('active', willBeItalic);
+        this.onBlockModified((target) => {
+          target.style.fontStyle = willBeItalic ? 'italic' : 'normal';
+        }, blockId);
+      });
+
+      document.getElementById('insp-btn-underline')?.addEventListener('click', (e) => {
+        const btn = e.currentTarget;
+        const willBeUnderline = !btn.classList.contains('active');
+        btn.classList.toggle('active', willBeUnderline);
+        this.onBlockModified((target) => {
+          target.style.textDecoration = willBeUnderline ? 'underline' : 'none';
+        }, blockId);
+      });
 
       // 1. Tag Selector
       document.getElementById('insp-tag-select')?.addEventListener('change', (e) => {
@@ -2837,54 +3543,85 @@
     }
 
     repaginate() {
-      const activeChap = this.chapterManager.getActiveChapter();
-      const rawHtml = activeChap ? this.chapterManager.compileFullDocument(this.paginationEngine.config) : '';
-      
-      const res = this.paginationEngine.paginate(rawHtml, activeChap, this.chapterManager.chapters);
+      if (this._isRepaginating) return;
+      this._isRepaginating = true;
+      try {
+        const activeChap = this.chapterManager.getActiveChapter();
+        const rawHtml = activeChap ? this.chapterManager.compileFullDocument(this.paginationEngine.config) : '';
+        
+        const res = this.paginationEngine.paginate(rawHtml, activeChap, this.chapterManager.chapters);
 
-      const countEl = document.getElementById('stat-sheet-count');
-      if (countEl) countEl.textContent = `${res.sheetCount} stran`;
+        const countEl = document.getElementById('stat-sheet-count');
+        if (countEl) countEl.textContent = `${res.sheetCount} stran`;
 
-      const totalPagesEl = document.getElementById('stat-total-pages');
-      if (totalPagesEl) totalPagesEl.textContent = `${res.sheetCount || 1}`;
+        const totalPagesEl = document.getElementById('stat-total-pages');
+        if (totalPagesEl) totalPagesEl.textContent = `${res.sheetCount || 1}`;
 
-      const jumpInput = document.getElementById('input-jump-page');
-      if (jumpInput) jumpInput.max = res.sheetCount || 1;
+        const jumpInput = document.getElementById('input-jump-page');
+        if (jumpInput) jumpInput.max = res.sheetCount || 1;
 
-      this._renderThumbnails(res.sheets);
-      this._renderDrawerTOC();
+        this._renderThumbnails(res.sheets);
+        this._renderDrawerTOC();
+      } finally {
+        this._isRepaginating = false;
+      }
+    }
+
+    _findChapterForBlock(targetBlockId, selectedElement) {
+      if (selectedElement) {
+        const chapId = selectedElement.getAttribute('data-chapter-id') || selectedElement.closest('[data-chapter-id]')?.getAttribute('data-chapter-id');
+        if (chapId) {
+          const found = this.chapterManager.chapters.find(c => c.id === chapId);
+          if (found) return found;
+        }
+      }
+      if (targetBlockId) {
+        for (const chap of this.chapterManager.chapters) {
+          if (chap.htmlContent && chap.htmlContent.includes(`data-block-id="${targetBlockId}"`)) {
+            return chap;
+          }
+        }
+      }
+      return this.chapterManager.getActiveChapter();
     }
 
     _liveUpdateBlock(mutatorFn, targetBlockId) {
-      const activeChap = this.chapterManager.getActiveChapter();
-      if (!activeChap || !activeChap.htmlContent) return;
+      const targetChap = this._findChapterForBlock(targetBlockId, this.inspector.selectedElement);
+      if (!targetChap || !targetChap.htmlContent) return;
 
-      activeChap.htmlContent = ChapterManager.ensureBlockIds(activeChap.htmlContent);
+      targetChap.htmlContent = ChapterManager.ensureBlockIds(targetChap.htmlContent);
       const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = activeChap.htmlContent;
+      tempDiv.innerHTML = targetChap.htmlContent;
 
       let targetInMaster = null;
       if (targetBlockId) {
         targetInMaster = tempDiv.querySelector(`[data-block-id="${targetBlockId}"]`);
       }
 
+      if (!targetInMaster) {
+        const selectedId = this.inspector.selectedElement?.getAttribute('data-block-id');
+        if (selectedId) {
+          targetInMaster = tempDiv.querySelector(`[data-block-id="${selectedId}"]`);
+        }
+      }
+
       if (targetInMaster) {
         mutatorFn(targetInMaster, targetInMaster.parentElement || tempDiv);
-        activeChap.htmlContent = tempDiv.innerHTML;
+        targetChap.htmlContent = tempDiv.innerHTML;
       }
     }
 
     _modifyBlock(mutatorFn, targetBlockId) {
-      const activeChap = this.chapterManager.getActiveChapter();
-      if (!activeChap || !activeChap.htmlContent) return;
+      const targetChap = this._findChapterForBlock(targetBlockId, this.inspector.selectedElement);
+      if (!targetChap || !targetChap.htmlContent) return;
 
       const viewport = document.getElementById('sheet-viewport');
       const savedScrollTop = viewport ? viewport.scrollTop : 0;
 
-      activeChap.htmlContent = ChapterManager.ensureBlockIds(activeChap.htmlContent);
+      targetChap.htmlContent = ChapterManager.ensureBlockIds(targetChap.htmlContent);
 
       const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = activeChap.htmlContent;
+      tempDiv.innerHTML = targetChap.htmlContent;
 
       let targetInMaster = null;
       if (targetBlockId) {
@@ -2909,7 +3646,7 @@
 
       if (targetInMaster) {
         mutatorFn(targetInMaster, targetInMaster.parentElement || tempDiv);
-        activeChap.htmlContent = tempDiv.innerHTML;
+        targetChap.htmlContent = tempDiv.innerHTML;
         this.repaginate();
         this._recordHistory();
 
@@ -3190,14 +3927,38 @@
         this.repaginate();
       });
 
-
+      // Themes & Typography Controls
       document.getElementById('sel-preset-template')?.addEventListener('change', (e) => {
-        document.body.setAttribute('data-theme', e.target.value);
+        const val = e.target.value;
+        if (val.startsWith('web-chap-')) {
+          const chapId = val.replace('web-chap-', '');
+          const targetChap = this.chapterManager.chapters.find(c => c.id === chapId);
+          if (targetChap && targetChap.styleTokens) {
+            this._applyStyleTokens(targetChap.styleTokens);
+          }
+        } else if (val === 'web-original') {
+          const activeChap = this.chapterManager.getActiveChapter();
+          if (activeChap && activeChap.styleTokens) {
+            this._applyStyleTokens(activeChap.styleTokens);
+          } else {
+            document.body.setAttribute('data-theme', 'web-original');
+          }
+        } else {
+          document.body.setAttribute('data-theme', val);
+        }
         this.repaginate();
       });
 
       document.getElementById('sel-font-family')?.addEventListener('change', (e) => {
-        document.body.setAttribute('data-font', e.target.value);
+        const val = e.target.value;
+        if (val === 'web-original') {
+          const activeChap = this.chapterManager.getActiveChapter();
+          if (activeChap && activeChap.styleTokens) {
+            this._applyStyleTokens(activeChap.styleTokens);
+          }
+        } else {
+          document.body.setAttribute('data-font', val);
+        }
         this.repaginate();
       });
 
@@ -3264,6 +4025,74 @@
       });
     }
 
+    _applyStyleTokens(tokens) {
+      if (!tokens) return;
+
+      if (tokens.brandColor) {
+        document.documentElement.style.setProperty('--doc-primary', tokens.brandColor);
+        document.documentElement.style.setProperty('--web-extracted-primary', tokens.brandColor);
+        const brandInput = document.getElementById('input-brand-color');
+        if (brandInput) brandInput.value = tokens.brandColor;
+      }
+      if (tokens.lightBg) {
+        document.documentElement.style.setProperty('--doc-primary-light', tokens.lightBg);
+        document.documentElement.style.setProperty('--web-extracted-bg', tokens.lightBg);
+      }
+      if (tokens.lightBorder) {
+        document.documentElement.style.setProperty('--doc-primary-border', tokens.lightBorder);
+        document.documentElement.style.setProperty('--web-extracted-border', tokens.lightBorder);
+      }
+      if (tokens.secondaryColor) {
+        document.documentElement.style.setProperty('--doc-secondary', tokens.secondaryColor);
+        document.documentElement.style.setProperty('--web-extracted-secondary', tokens.secondaryColor);
+      }
+      if (tokens.headingColor) {
+        document.documentElement.style.setProperty('--doc-headings', tokens.headingColor);
+        document.documentElement.style.setProperty('--web-extracted-heading', tokens.headingColor);
+      }
+      if (tokens.h1Color) {
+        document.documentElement.style.setProperty('--web-h1-color', tokens.h1Color);
+      }
+      if (tokens.h2Color) {
+        document.documentElement.style.setProperty('--web-h2-color', tokens.h2Color);
+      }
+      if (tokens.h3Color) {
+        document.documentElement.style.setProperty('--web-h3-color', tokens.h3Color);
+      }
+      if (tokens.pColor) {
+        document.documentElement.style.setProperty('--web-p-color', tokens.pColor);
+      }
+      if (tokens.bodyFont) {
+        const cleanFont = tokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim();
+        ContentExtractor._ensureGoogleFontLoaded(cleanFont);
+        document.documentElement.style.setProperty('--web-extracted-font', `"${cleanFont}", system-ui, sans-serif`);
+        document.documentElement.style.setProperty('--doc-font-family', `"${cleanFont}", system-ui, sans-serif`);
+      }
+      if (tokens.headingFont) {
+        const cleanHead = tokens.headingFont.split(',')[0].replace(/['"]/g, '').trim();
+        ContentExtractor._ensureGoogleFontLoaded(cleanHead);
+        if (cleanHead.toLowerCase().includes('libertine')) {
+          const serifStack = '"Linux Libertine", "Libertinus Serif", "EB Garamond", "Lora", Georgia, "Times New Roman", serif';
+          document.documentElement.style.setProperty('--web-extracted-heading-font', serifStack);
+          document.documentElement.style.setProperty('--doc-font-heading', serifStack);
+        } else {
+          document.documentElement.style.setProperty('--web-extracted-heading-font', `"${cleanHead}", system-ui, sans-serif`);
+          document.documentElement.style.setProperty('--doc-font-heading', `"${cleanHead}", system-ui, sans-serif`);
+        }
+      }
+
+      document.body.setAttribute('data-theme', 'web-original');
+      document.body.setAttribute('data-font', 'web-original');
+
+      const themeSelect = document.getElementById('sel-preset-template');
+      if (themeSelect && !themeSelect.value.startsWith('web-chap-')) {
+        themeSelect.value = 'web-original';
+      }
+
+      const fontSelect = document.getElementById('sel-font-family');
+      if (fontSelect) fontSelect.value = 'web-original';
+    }
+
     _bindDrawerEvents() {
       const toggleBtn = document.getElementById('btn-toggle-drawer');
       const drawer = document.getElementById('canvas-drawer-panel');
@@ -3272,6 +4101,9 @@
       const toggleDrawer = () => {
         const isOpen = drawer?.classList.toggle('open');
         toggleBtn?.classList.toggle('drawer-open', isOpen);
+        if (isOpen && this._pendingThumbnailSheets) {
+          this._renderThumbnails(this._pendingThumbnailSheets);
+        }
       };
 
       toggleBtn?.addEventListener('click', toggleDrawer);
@@ -3290,6 +4122,9 @@
         tabTOC?.classList.remove('active');
         if (listThumbs) listThumbs.style.display = 'flex';
         if (treeTOC) treeTOC.style.display = 'none';
+        if (this._pendingThumbnailSheets) {
+          this._renderThumbnails(this._pendingThumbnailSheets);
+        }
       });
 
       tabTOC?.addEventListener('click', () => {
@@ -3301,8 +4136,15 @@
     }
 
     _renderThumbnails(sheets) {
+      const drawer = document.getElementById('canvas-drawer-panel');
       const thumbsList = document.getElementById('drawer-thumbs-list');
       if (!thumbsList) return;
+
+      if (!drawer?.classList.contains('open')) {
+        this._pendingThumbnailSheets = sheets;
+        return;
+      }
+      this._pendingThumbnailSheets = null;
       thumbsList.innerHTML = '';
 
       const targetThumbWidth = 136;
@@ -3421,19 +4263,58 @@
         if (target) {
           const blockId = target.getAttribute('data-block-id');
           if (blockId) {
-            const activeChap = this.chapterManager.getActiveChapter();
-            if (activeChap && activeChap.htmlContent) {
+            const targetChap = this._findChapterForBlock(blockId, target);
+            if (targetChap && targetChap.htmlContent) {
               const tempDiv = document.createElement('div');
-              tempDiv.innerHTML = activeChap.htmlContent;
+              tempDiv.innerHTML = targetChap.htmlContent;
               const targetInMaster = tempDiv.querySelector(`[data-block-id="${blockId}"]`);
               if (targetInMaster) {
                 targetInMaster.innerHTML = target.innerHTML;
-                activeChap.htmlContent = tempDiv.innerHTML;
+                targetChap.htmlContent = tempDiv.innerHTML;
               }
             }
           }
         }
       });
+    }
+
+    _syncWebStyleDropdowns() {
+      const templateSelect = document.getElementById('sel-preset-template');
+      const fontSelect = document.getElementById('sel-font-family');
+      const webOptgroup = document.getElementById('optgroup-web-sources');
+
+      const chaptersWithTokens = this.chapterManager.chapters.filter(ch => ch.styleTokens && (ch.styleTokens.brandColor || ch.styleTokens.bodyFont));
+
+      if (webOptgroup) {
+        webOptgroup.innerHTML = '';
+        if (chaptersWithTokens.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = 'web-original';
+          opt.textContent = '🌐 Původní styl z webu (Aktivní URL)';
+          webOptgroup.appendChild(opt);
+        } else {
+          chaptersWithTokens.forEach((ch, idx) => {
+            const opt = document.createElement('option');
+            opt.value = `web-chap-${ch.id}`;
+            const fName = ch.styleTokens.bodyFont ? ch.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Web Font';
+            const cHex = ch.styleTokens.brandColor || '#0284c7';
+            opt.textContent = `🌐 Styl: ${ch.title.substring(0, 24)}${ch.title.length > 24 ? '…' : ''} (${fName}, ${cHex})`;
+            webOptgroup.appendChild(opt);
+          });
+        }
+      }
+
+      if (fontSelect) {
+        let originalOpt = fontSelect.querySelector('option[value="web-original"]');
+        if (!originalOpt) {
+          originalOpt = document.createElement('option');
+          originalOpt.value = 'web-original';
+          fontSelect.insertBefore(originalOpt, fontSelect.firstChild);
+        }
+        const activeChap = this.chapterManager.getActiveChapter();
+        const activeFont = activeChap?.styleTokens?.bodyFont ? activeChap.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Extrahované';
+        originalOpt.textContent = `🌐 Původní typografie webu (${activeFont})`;
+      }
     }
 
     _bindModals() {
@@ -3452,15 +4333,24 @@
           const sample = ContentExtractor.getSampleArticles().find(s => s.id === sampleId);
           if (sample) {
             this.chapterManager.addChapter(sample.title, sample.htmlContent, sample.sourceUrl);
+            this._syncWebStyleDropdowns();
             modal?.classList.remove('open');
             this._showToast('✅ Vzorová lekce byla načtena');
           }
         });
       });
 
+      const urlInputEl = document.getElementById('import-url-input');
+      const textInputEl = document.getElementById('import-text-input');
+
+      urlInputEl?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          btnExecuteImport?.click();
+        }
+      });
+
       btnExecuteImport?.addEventListener('click', async () => {
-        const urlInputEl = document.getElementById('import-url-input');
-        const textInputEl = document.getElementById('import-text-input');
         const preserveStyles = document.getElementById('chk-preserve-web-styles')?.checked ?? true;
 
         const urlInput = urlInputEl?.value.trim() || '';
@@ -3471,10 +4361,34 @@
           btnExecuteImport.disabled = true;
           try {
             const parsed = await ContentExtractor.fetchFromUrl(urlInput, preserveStyles);
-            this.chapterManager.addChapter(parsed.title, parsed.htmlContent, urlInput);
+            this.chapterManager.addChapter(parsed.title, parsed.htmlContent, urlInput, {}, parsed.styleTokens);
+            if (parsed.styleTokens) {
+              this._applyStyleTokens(parsed.styleTokens);
+            }
+            this._syncWebStyleDropdowns();
             modal?.classList.remove('open');
             if (urlInputEl) urlInputEl.value = '';
             this._showToast('✅ Článek byl úspěšně načten z webu');
+
+            // 1. Initial immediate layout
+            this.repaginate();
+
+            // 2. Await web fonts ready
+            if (document.fonts && document.fonts.ready) {
+              document.fonts.ready.then(() => {
+                setTimeout(() => {
+                  if (!this._isRepaginating) this.repaginate();
+                }, 120);
+              });
+            }
+
+            // 3. Timed layout refinement passes
+            setTimeout(() => {
+              if (!this._isRepaginating) this.repaginate();
+            }, 450);
+            setTimeout(() => {
+              if (!this._isRepaginating) this.repaginate();
+            }, 1200);
           } catch (err) {
             alert(err.message);
           } finally {
@@ -3511,6 +4425,7 @@
     }
 
     _renderChapterTree(chapters, activeId) {
+      this._syncWebStyleDropdowns();
       const treeList = document.getElementById('chapter-tree-list');
       if (!treeList) return;
       treeList.innerHTML = '';
@@ -3708,8 +4623,20 @@
     }
   }
 
+  window.ContentExtractor = ContentExtractor;
+  window.QRGenerator = QRGenerator;
+  window.PaginationEngine = PaginationEngine;
+  window.TOCGenerator = TOCGenerator;
+  window.ChapterManager = ChapterManager;
+  window.ProjectStorage = ProjectStorage;
+  window.URLPrinterApp = URLPrinterApp;
+
   window.addEventListener('DOMContentLoaded', () => {
-    window.app = new URLPrinterApp();
+    if (document.getElementById('app-main-layout')) {
+      window.app = new URLPrinterApp();
+    }
   });
 
 })();
+
+

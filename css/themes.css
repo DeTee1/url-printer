@@ -57,17 +57,57 @@
 
 /* 0. Původní styl z webu (Web Visual Identity & Brand Styling) */
 body[data-theme="web-original"] {
-  --doc-primary: var(--web-extracted-primary, #2563eb);
-  --doc-primary-light: var(--web-extracted-bg, #f8fafc);
-  --doc-primary-border: var(--web-extracted-border, #cbd5e1);
-  --doc-secondary: var(--web-extracted-secondary, #1e40af);
+  --doc-primary: var(--web-extracted-primary, #0f766e);
+  --doc-primary-light: var(--web-extracted-bg, #f0fdfa);
+  --doc-primary-border: var(--web-extracted-border, #99f6e4);
+  --doc-secondary: var(--web-extracted-secondary, #0284c7);
   --doc-headings: var(--web-extracted-heading, #0f172a);
-  --doc-text: var(--web-extracted-text, #1e293b);
+  --doc-text: var(--web-p-color, var(--web-extracted-text, #1e293b));
   --doc-text-muted: #64748b;
-  --doc-border: #e2e8f0;
+  --doc-border: var(--web-extracted-border, #e2e8f0);
   --doc-font-family: var(--web-extracted-font, 'Inter', system-ui, sans-serif);
-  --doc-font-heading: var(--web-extracted-heading-font, 'Outfit', sans-serif);
+  --doc-font-heading: var(--web-extracted-heading-font, var(--web-extracted-font, 'Outfit', sans-serif));
 }
+
+body[data-theme="web-original"] h1.doc-element,
+body[data-theme="web-original"] .doc-h1 {
+  color: var(--web-h1-color, var(--doc-headings, #0f172a));
+  font-family: var(--doc-font-heading);
+}
+
+body[data-theme="web-original"] h2.doc-element,
+body[data-theme="web-original"] .doc-h2 {
+  color: var(--web-h2-color, var(--doc-headings, #0f172a));
+  font-family: var(--doc-font-heading);
+  border-bottom: 1.5pt solid var(--doc-primary-border, #e2e8f0);
+}
+
+body[data-theme="web-original"] h3.doc-element,
+body[data-theme="web-original"] .doc-h3 {
+  color: var(--web-h3-color, var(--doc-headings, #0f172a));
+  font-family: var(--doc-font-heading);
+}
+
+body[data-theme="web-original"] p.doc-element {
+  color: var(--web-p-color, #1e293b);
+  font-family: var(--doc-font-family);
+}
+
+body[data-theme="web-original"] blockquote.doc-element {
+  border-left: 3.5pt solid var(--doc-primary, #0f766e);
+  background: var(--doc-primary-light, #f0fdfa);
+}
+
+body[data-theme="web-original"] .doc-table:not(.doc-table-infobox) thead th {
+  background: var(--doc-primary, #0f766e);
+  color: #ffffff;
+}
+
+body[data-theme="web-original"] .doc-table-infobox th {
+  background: var(--doc-primary-light, #f8fafc);
+  color: var(--doc-headings, #0f172a);
+}
+
 
 /* 1. Moderní Vzdělávací (Emerald / Slate) */
 body[data-theme="modern-edu"] {
@@ -168,6 +208,11 @@ body[data-theme="corporate-navy"] {
 /* ==========================================================================
    FONT FAMILIES HELPER CLASSES
    ========================================================================== */
+body[data-font="web-original"] {
+  --doc-font-family: var(--web-extracted-font, 'Inter', system-ui, sans-serif);
+  --doc-font-heading: var(--web-extracted-heading-font, var(--web-extracted-font, 'Outfit', sans-serif));
+}
+
 body[data-font="sans"] {
   --doc-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --doc-font-heading: 'Outfit', sans-serif;
@@ -188,6 +233,17 @@ body[data-font="mono"] {
   --doc-font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
   --doc-font-heading: 'Plus Jakarta Sans', monospace;
 }
+
+/* Multi-Source Chapter-Specific Style Scoping */
+.sheet-chapter-block {
+  --doc-primary: var(--chap-primary, var(--doc-primary));
+  --doc-primary-light: var(--chap-bg, var(--doc-primary-light));
+  --doc-primary-border: var(--chap-border, var(--doc-primary-border));
+  --doc-font-family: var(--chap-font, var(--doc-font-family));
+  --doc-font-heading: var(--chap-heading-font, var(--doc-font-heading));
+  --doc-headings: var(--chap-heading-color, var(--doc-headings));
+}
+
 
 /* ==========================================================================
    MEDIA / TONER MODES

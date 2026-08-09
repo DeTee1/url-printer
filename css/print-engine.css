@@ -450,13 +450,105 @@ table.doc-element td img, .sheet-body table td img, .doc-table-img {
 
 figure.doc-table-figure {
   margin: 0.85em 0;
+  clear: both;
 }
 
-figure.doc-table-figure figcaption {
-  font-size: 7.5pt;
-  color: #64748b;
+figure.doc-table-figure:has(.doc-table-infobox) {
+  float: right;
+  clear: right;
+  margin: 0.2em 0 1em 1.2em;
+  max-width: 320px;
+}
+
+/* Wikipedia & Encyclopedia Compact Summary Infobox */
+table.doc-table-infobox {
+  font-size: 8pt;
+  margin: 0.4em 0 0.8em 0;
+  max-width: 320px;
+  width: 100%;
+  border: 1px solid var(--doc-primary-border, #cbd5e1);
+  background: var(--doc-primary-light, #f8fafc);
+  border-radius: 4px;
+  border-collapse: collapse;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+table.doc-table-infobox th {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--doc-headings, #0f172a);
+  font-weight: 700;
+  text-align: left;
+  padding: 4px 8px;
+  border: 1px solid var(--doc-border, #cbd5e1);
+  width: 38%;
+  font-size: 8pt;
+}
+
+table.doc-table-infobox td {
+  padding: 4px 8px;
+  text-align: left;
+  border: 1px solid var(--doc-border, #cbd5e1);
+  background: #ffffff;
+  font-size: 8pt;
+}
+
+table.doc-table-infobox th[colspan],
+table.doc-table-infobox .infobox-above,
+table.doc-table-infobox .infobox-header {
+  background: var(--doc-primary-light, #f1f5f9) !important;
+  color: var(--doc-headings, #0f172a) !important;
   text-align: center;
-  margin-top: 6px;
+  font-weight: 800;
+  font-size: 9pt;
+  border: 1px solid var(--doc-border, #cbd5e1);
+}
+
+table.doc-table-infobox ul, table.doc-table-infobox ol {
+  margin: 0;
+  padding-left: 14px;
+}
+
+table.doc-table-infobox li {
+  margin: 1px 0;
+}
+
+/* Wikipedia & Web Image Gallery Grid */
+.doc-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 0.8em 0;
+  page-break-inside: avoid;
+}
+
+.doc-gallery-item {
+  border: 1px solid var(--doc-border, #cbd5e1);
+  border-radius: 4px;
+  padding: 6px;
+  background: #ffffff;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.doc-gallery-item img {
+  max-height: 105px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+  margin: 0 auto;
+  border-radius: 2px;
+}
+
+.doc-gallery-cap {
+  font-size: 7.5pt;
+  color: var(--doc-text-muted, #64748b);
+  margin-top: 5px;
+  line-height: 1.25;
+  text-align: center;
 }
 
 /* Images & Figures */
