@@ -395,7 +395,7 @@
      ========================================================================== */
   class TOCGenerator {
     static buildTOC(viewportElement, options = {}) {
-      const titleText = options.title || 'Obsah dokumentu';
+      const titleText = options.title || (window.I18N ? window.I18N.t('doc_toc.title') : 'Table of Contents');
       const tocWrapper = document.createElement('div');
       tocWrapper.className = 'doc-toc-wrapper doc-element';
       tocWrapper.setAttribute('data-block-type', 'toc');
@@ -417,7 +417,7 @@
         const headings = Array.from(sheet.querySelectorAll('h1.doc-element, h2.doc-element, h3.doc-element, .doc-h1, .doc-h2, .doc-h3'));
 
         headings.forEach(h => {
-          if (h.closest('.doc-toc-wrapper') || h.textContent.includes('Obsah dokumentu')) return;
+          if (h.closest('.doc-toc-wrapper') || h.textContent.includes('Obsah dokumentu') || h.textContent.includes('Table of Contents')) return;
 
           let level = 1;
           if (h.tagName === 'H2' || h.classList.contains('doc-h2')) level = 2;
@@ -449,7 +449,7 @@
         const emptyLi = document.createElement('li');
         emptyLi.className = 'doc-toc-item';
         emptyLi.style.color = 'var(--doc-text-muted, #64748b)';
-        emptyLi.textContent = 'Dokument zatím neobsahuje žádné podnadpisy.';
+        emptyLi.textContent = window.I18N ? window.I18N.t('doc_toc.empty') : 'Document does not contain any subheadings yet.';
         listEl.appendChild(emptyLi);
       }
 
@@ -3827,9 +3827,11 @@
     }
 
     addChapter(title, htmlContent, sourceUrl = '', metadata = {}, styleTokens = null) {
-      const cleanTitle = (title || 'Nová kapitola').replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
+      const defaultTitle = window.I18N ? window.I18N.t('chapters.default_title') : 'New Chapter';
+      const cleanTitle = (title || defaultTitle).replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
       const id = 'chap_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-      const rawContent = htmlContent || `<h1 class="doc-element doc-h1">${this._escapeHTML(cleanTitle)}</h1><p class="doc-element">Obsah nové kapitoly...</p>`;
+      const defaultBody = window.I18N ? window.I18N.t('chapters.default_content') : 'Content of the new chapter...';
+      const rawContent = htmlContent || `<h1 class="doc-element doc-h1">${this._escapeHTML(cleanTitle)}</h1><p class="doc-element">${this._escapeHTML(defaultBody)}</p>`;
       const indexedContent = ChapterManager.ensureBlockIds(rawContent);
 
       const chapter = {
@@ -4060,14 +4062,17 @@
       this.sheets = [];
 
       if (!rawHtml || !rawHtml.trim()) {
+        const emptyTitle = window.I18N ? window.I18N.t('empty_workspace.title') : 'No document loaded yet';
+        const emptyDesc = window.I18N ? window.I18N.t('empty_workspace.desc') : 'Enter article URL or paste text for controlled layout and printing.';
+        const emptyBtn = window.I18N ? window.I18N.t('empty_workspace.btn') : 'Import URL / Text';
         const emptyCard = document.createElement('div');
         emptyCard.className = 'empty-workspace-card';
         emptyCard.innerHTML = `
           <div class="empty-workspace-icon">🌐</div>
-          <div class="empty-workspace-title">Žádný dokument zatím není načten</div>
-          <div class="empty-workspace-desc">Zadejte URL adresu článku nebo vložte text pro kontrolovanou sazbu a tisk.</div>
+          <div class="empty-workspace-title">${emptyTitle}</div>
+          <div class="empty-workspace-desc">${emptyDesc}</div>
           <button class="btn btn-primary" onclick="document.getElementById('modal-import').classList.add('open')">
-            <span>➕ Importovat URL / Text</span>
+            <span>${emptyBtn}</span>
           </button>
         `;
         this.zoomWrapper.appendChild(emptyCard);
@@ -4517,12 +4522,13 @@
         const isOdd = pageNum % 2 !== 0;
 
         const chapterContainer = sheet.querySelector('[data-chapter-title]');
-        const chapterTitle = chapterContainer?.getAttribute('data-chapter-title') || activeChapter?.title || 'Dokument';
+        const chapterTitle = chapterContainer?.getAttribute('data-chapter-title') || activeChapter?.title || (window.I18N ? window.I18N.t('dialogs.untitled_doc') : 'Document');
         const chapterUrl = chapterContainer?.getAttribute('data-chapter-url') || activeChapter?.sourceUrl || '';
 
         let pageStr = `${pageNum}`;
-        if (this.config.pageNumFormat === 'prefix') pageStr = `Strana ${pageNum} z ${totalPages}`;
-        else if (this.config.pageNumFormat === 'short') pageStr = `s. ${pageNum} / ${totalPages}`;
+        const isCs = window.I18N && window.I18N.currentLang === 'cs';
+        if (this.config.pageNumFormat === 'prefix') pageStr = isCs ? `Strana ${pageNum} z ${totalPages}` : `Page ${pageNum} of ${totalPages}`;
+        else if (this.config.pageNumFormat === 'short') pageStr = isCs ? `s. ${pageNum} / ${totalPages}` : `p. ${pageNum} / ${totalPages}`;
         else if (this.config.pageNumFormat === 'simple') pageStr = `${pageNum}`;
         else if (this.config.pageNumFormat === 'roman') pageStr = this._toRoman(pageNum);
 
@@ -4658,15 +4664,16 @@
 
     renderEmpty() {
       this.currentInspectedId = null;
+      const t = (k, def) => (window.I18N ? window.I18N.t(k) : def);
       this.panel.innerHTML = `
         <div class="inspector-header">
-          <span>Vlastnosti bloku</span>
+          <span>${t('inspector.header_empty', 'Block Properties')}</span>
         </div>
         <div class="inspector-body">
           <div style="text-align: center; padding: 40px 10px; color: var(--ui-text-muted);">
             <div style="font-size: 28px; margin-bottom: 8px;">👆</div>
-            <div style="font-weight: 700; font-size: 13px; color: var(--ui-text-heading); margin-bottom: 4px;">Žádný blok není vybrán</div>
-            <div style="font-size: 11px;">Klikněte na libovolný text, obrázek či tabulku na stránce pro zobrazení parametrů.</div>
+            <div style="font-weight: 700; font-size: 13px; color: var(--ui-text-heading); margin-bottom: 4px;">${t('inspector.no_block_title', 'No block selected')}</div>
+            <div style="font-size: 11px;">${t('inspector.no_block_desc', 'Click on any text, image or table on the page to display parameters.')}</div>
           </div>
         </div>
       `;
@@ -4701,33 +4708,41 @@
 
       const currentColorHex = rgbToHex(el.style.color || compStyle.color);
 
+      const t = (k, p, def) => {
+        if (typeof p === 'string' && def === undefined) {
+          def = p;
+          p = {};
+        }
+        return window.I18N ? window.I18N.t(k, p) : (def || k);
+      };
+
       this.panel.innerHTML = `
         <div class="inspector-header">
-          <span>Vlastnosti: &lt;${tag}&gt;</span>
-          <button id="btn-insp-close" class="chapter-btn-icon" title="Zavřít panel">&times;</button>
+          <span>${t('inspector.header_tag', { tag }, `Properties: &lt;${tag}&gt;`)}</span>
+          <button id="btn-insp-close" class="chapter-btn-icon" title="${t('inspector.close_title', 'Close panel')}">&times;</button>
         </div>
 
         <div class="inspector-body">
           
           <div class="inspector-section-card">
-            <div class="inspector-sec-title">Typ textového bloku</div>
+            <div class="inspector-sec-title">${t('inspector.block_type', 'Text Block Type')}</div>
             <select id="insp-tag-select" class="control-select" ${!isText ? 'disabled' : ''}>
-              <option value="h1" ${tag === 'h1' ? 'selected' : ''}>H1 — Hlavní nadpis</option>
-              <option value="h2" ${tag === 'h2' ? 'selected' : ''}>H2 — Sekční nadpis</option>
-              <option value="h3" ${tag === 'h3' ? 'selected' : ''}>H3 — Podnadpis 3. úrovně</option>
-              <option value="h4" ${tag === 'h4' ? 'selected' : ''}>H4 — Menší podnadpis</option>
-              <option value="p" ${tag === 'p' ? 'selected' : ''}>Odstavec textu</option>
-              <option value="blockquote" ${tag === 'blockquote' ? 'selected' : ''}>Citace (Quote)</option>
-              <option value="pre" ${tag === 'pre' ? 'selected' : ''}>Kód / Monospace</option>
+              <option value="h1" ${tag === 'h1' ? 'selected' : ''}>${t('inspector.tag_h1', 'H1 — Main Heading')}</option>
+              <option value="h2" ${tag === 'h2' ? 'selected' : ''}>${t('inspector.tag_h2', 'H2 — Section Heading')}</option>
+              <option value="h3" ${tag === 'h3' ? 'selected' : ''}>${t('inspector.tag_h3', 'H3 — Level 3 Subheading')}</option>
+              <option value="h4" ${tag === 'h4' ? 'selected' : ''}>${t('inspector.tag_h4', 'H4 — Minor Subheading')}</option>
+              <option value="p" ${tag === 'p' ? 'selected' : ''}>${t('inspector.tag_p', 'Paragraph')}</option>
+              <option value="blockquote" ${tag === 'blockquote' ? 'selected' : ''}>${t('inspector.tag_blockquote', 'Blockquote (Quote)')}</option>
+              <option value="pre" ${tag === 'pre' ? 'selected' : ''}>${t('inspector.tag_pre', 'Code / Monospace')}</option>
             </select>
           </div>
 
           <div class="inspector-section-card ${!isText ? 'inspector-control-disabled' : ''}">
-            <div class="inspector-sec-title">🎨 Barva a styl textu</div>
+            <div class="inspector-sec-title">${t('inspector.color_style', '🎨 Text Color & Style')}</div>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
               <input type="color" id="insp-color-text" value="${currentColorHex}" style="width: 30px; height: 30px; padding: 0; border: none; border-radius: 4px; cursor: pointer;">
-              <span id="insp-color-hex-label" style="font-size: 11px; font-family: monospace; color: var(--ui-text-muted);">${el.style.color ? el.style.color : '(Původní z webu)'}</span>
-              <button class="btn btn-secondary" id="insp-btn-color-reset" style="font-size: 11px; margin-left: auto; padding: 4px 8px;">↺ Obnovit</button>
+              <span id="insp-color-hex-label" style="font-size: 11px; font-family: monospace; color: var(--ui-text-muted);">${el.style.color ? el.style.color : t('inspector.color_original', '(Original from web)')}</span>
+              <button class="btn btn-secondary" id="insp-btn-color-reset" style="font-size: 11px; margin-left: auto; padding: 4px 8px;">${t('inspector.color_reset', '↺ Reset')}</button>
             </div>
             <div style="display: flex; gap: 6px;">
               <button class="btn btn-secondary ${isBold ? 'active' : ''}" id="insp-btn-bold" style="flex: 1; font-weight: 700;">B</button>
@@ -4737,25 +4752,25 @@
           </div>
 
           <div class="inspector-section-card">
-            <div class="inspector-sec-title">Zarovnání prvku</div>
+            <div class="inspector-sec-title">${t('inspector.alignment', 'Element Alignment')}</div>
             <div class="align-btn-group">
-              <button class="align-btn ${currentAlign === 'left' ? 'active' : ''}" id="insp-align-left" title="Zarovnat vlevo">
+              <button class="align-btn ${currentAlign === 'left' ? 'active' : ''}" id="insp-align-left" title="${t('inspector.align_left', 'Align left')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
               </button>
-              <button class="align-btn ${currentAlign === 'center' ? 'active' : ''}" id="insp-align-center" title="Zarovnat na střed">
+              <button class="align-btn ${currentAlign === 'center' ? 'active' : ''}" id="insp-align-center" title="${t('inspector.align_center', 'Align center')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="10" x2="6" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="18" y1="18" x2="6" y2="18"></line></svg>
               </button>
-              <button class="align-btn ${currentAlign === 'right' ? 'active' : ''}" id="insp-align-right" title="Zarovnat vpravo">
+              <button class="align-btn ${currentAlign === 'right' ? 'active' : ''}" id="insp-align-right" title="${t('inspector.align_right', 'Align right')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
               </button>
-              <button class="align-btn ${currentAlign === 'justify' ? 'active' : ''}" id="insp-align-justify" title="Zarovnat do bloku" ${!isText ? 'disabled' : ''}>
+              <button class="align-btn ${currentAlign === 'justify' ? 'active' : ''}" id="insp-align-justify" title="${t('inspector.align_justify', 'Justify text')}" ${!isText ? 'disabled' : ''}>
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="3" y2="18"></line></svg>
               </button>
             </div>
           </div>
 
           <div class="inspector-section-card ${!isText ? 'inspector-control-disabled' : ''}">
-            <div class="inspector-sec-title">Velikost písma (pt / px)</div>
+            <div class="inspector-sec-title">${t('inspector.font_size', 'Font Size (pt / px)')}</div>
             <div class="slider-num-pair">
               <input type="range" id="insp-range-fontsize" min="8" max="48" value="${currentFontSize}">
               <input type="number" id="insp-num-fontsize" min="8" max="48" value="${currentFontSize}">
@@ -4764,10 +4779,10 @@
 
           ${isImg ? `
           <div class="inspector-section-card" style="border-color: var(--pastel-blue-border); background: var(--pastel-blue-bg);">
-            <div class="inspector-sec-title" style="color: var(--pastel-blue-text);">🖼️ Přizpůsobení obrázku</div>
+            <div class="inspector-sec-title" style="color: var(--pastel-blue-text);">${t('inspector.img_adjust', '🖼️ Image Adjustments')}</div>
             
             <div class="control-group">
-              <label class="control-sublabel">Velikost obrázku (10 % – 200 %)</label>
+              <label class="control-sublabel">${t('inspector.img_size', 'Image Size (10% – 200%)')}</label>
               <div class="slider-num-pair">
                 <input type="range" id="insp-img-range-width" min="10" max="200" value="${currentScale}">
                 <input type="number" id="insp-img-num-width" min="10" max="200" value="${currentScale}">
@@ -4784,8 +4799,8 @@
             </div>
 
             <div style="display: flex; gap: 6px; margin-top: 6px;">
-              <button class="btn btn-secondary" id="insp-img-toggle-border" style="flex: 1; font-size: 11px;">Rámeček</button>
-              <button class="btn btn-secondary" id="insp-img-toggle-shadow" style="flex: 1; font-size: 11px;">Stín</button>
+              <button class="btn btn-secondary" id="insp-img-toggle-border" style="flex: 1; font-size: 11px;">${t('inspector.img_border', 'Border')}</button>
+              <button class="btn btn-secondary" id="insp-img-toggle-shadow" style="flex: 1; font-size: 11px;">${t('inspector.img_shadow', 'Shadow')}</button>
             </div>
           </div>
           ` : ''}
@@ -4793,17 +4808,17 @@
           <div class="inspector-section-card">
             <label class="chk-label">
               <input type="checkbox" id="insp-toggle-break" ${hasBreakBefore ? 'checked' : ''}>
-              <span>Zalomit stránku před tímto blokem</span>
+              <span>${t('inspector.break_before', 'Break page before this block')}</span>
             </label>
           </div>
 
           <div class="inspector-section-card">
-            <div class="inspector-sec-title">Manipulace s blokem</div>
+            <div class="inspector-sec-title">${t('inspector.manipulation', 'Block Manipulation')}</div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-              <button class="btn btn-secondary" id="insp-move-up">▲ Posunout výše</button>
-              <button class="btn btn-secondary" id="insp-move-down">▼ Posunout níže</button>
-              <button class="btn btn-secondary" id="insp-duplicate-btn">📋 Duplikovat</button>
-              <button class="btn btn-secondary" id="insp-delete-btn" style="color: #dc2626;">🗑️ Odstranit</button>
+              <button class="btn btn-secondary" id="insp-move-up">${t('inspector.move_up', '▲ Move Up')}</button>
+              <button class="btn btn-secondary" id="insp-move-down">${t('inspector.move_down', '▼ Move Down')}</button>
+              <button class="btn btn-secondary" id="insp-duplicate-btn">${t('inspector.duplicate', '📋 Duplicate')}</button>
+              <button class="btn btn-secondary" id="insp-delete-btn" style="color: #dc2626;">${t('inspector.delete', '🗑️ Delete')}</button>
             </div>
           </div>
 
@@ -4832,7 +4847,7 @@
 
       document.getElementById('insp-btn-color-reset')?.addEventListener('click', () => {
         if (this.selectedElement) this.selectedElement.style.color = '';
-        if (colorLabel) colorLabel.textContent = '(Výchozí)';
+        if (colorLabel) colorLabel.textContent = window.I18N ? window.I18N.t('inspector.color_default') : '(Default)';
         this.onBlockModified((target) => { target.style.color = ''; }, blockId);
       });
 
@@ -5151,8 +5166,9 @@
      7. WORD / DOCX EXPORTER (Exact Word XML Margins)
      ========================================================================== */
   class WordExporter {
-    static exportToDocx(htmlContent, title = 'Dokument', config = {}) {
-      const cleanTitle = (title || 'Dokument').replace(/[\\/:*?"<>|]/g, '_');
+    static exportToDocx(htmlContent, title = 'Document', config = {}) {
+      const defTitle = window.I18N ? window.I18N.t('dialogs.untitled_doc') : 'Document';
+      const cleanTitle = (title || defTitle).replace(/[\\/:*?"<>|]/g, '_');
       const mTop = config.marginTop ?? 20;
       const mBottom = config.marginBottom ?? 20;
       const mLeft = config.marginLeft ?? 20;
@@ -5410,6 +5426,34 @@
         }
       });
 
+      if (window.I18N) {
+        window.I18N.onLanguageChange(() => {
+          if (this.inspector) {
+            if (this.inspector.selectedElement) {
+              this.inspector.renderInspector(this.inspector.selectedElement);
+            } else {
+              this.inspector.renderEmpty();
+            }
+          }
+          this._renderChapterTree(this.chapterManager.chapters, this.chapterManager.activeChapterId);
+          const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+          this._updateTemplateSpecCard(activeTheme);
+          const chkMirror = document.getElementById('chk-mirror-margins');
+          const lblL = document.getElementById('lbl-margin-left');
+          const lblR = document.getElementById('lbl-margin-right');
+          if (chkMirror && lblL && lblR) {
+            lblL.textContent = chkMirror.checked 
+              ? window.I18N.t('layout.margin_inner') 
+              : window.I18N.t('layout.margin_left');
+            lblR.textContent = chkMirror.checked 
+              ? window.I18N.t('layout.margin_outer') 
+              : window.I18N.t('layout.margin_right');
+          }
+          this._syncWebStyleDropdowns();
+          this.repaginate();
+        });
+      }
+
       this.repaginate();
     }
 
@@ -5444,8 +5488,16 @@
         chkMirror.checked = !!config.mirrorMargins;
         const lblL = document.getElementById('lbl-margin-left');
         const lblR = document.getElementById('lbl-margin-right');
-        if (lblL) lblL.textContent = chkMirror.checked ? 'Vnitřní okraj (Vazba)' : 'Levý okraj';
-        if (lblR) lblR.textContent = chkMirror.checked ? 'Vnější okraj' : 'Pravý okraj';
+        if (lblL) {
+          lblL.textContent = chkMirror.checked 
+            ? (window.I18N ? window.I18N.t('layout.margin_inner') : 'Inner Margin (Binding)') 
+            : (window.I18N ? window.I18N.t('layout.margin_left') : 'Left Margin');
+        }
+        if (lblR) {
+          lblR.textContent = chkMirror.checked 
+            ? (window.I18N ? window.I18N.t('layout.margin_outer') : 'Outer Margin') 
+            : (window.I18N ? window.I18N.t('layout.margin_right') : 'Right Margin');
+        }
       }
 
       // Headers & Footers Enable
@@ -5538,7 +5590,13 @@
         const res = this.paginationEngine.paginate(rawHtml, activeChap, this.chapterManager.chapters);
 
         const countEl = document.getElementById('stat-sheet-count');
-        if (countEl) countEl.textContent = `${res.sheetCount} stran`;
+        if (countEl) {
+          if (window.I18N && window.I18N.currentLang === 'cs') {
+            countEl.textContent = `${res.sheetCount} ${res.sheetCount === 1 ? 'strana' : (res.sheetCount >= 2 && res.sheetCount <= 4 ? 'strany' : 'stran')}`;
+          } else {
+            countEl.textContent = `${res.sheetCount} ${res.sheetCount === 1 ? 'page' : 'pages'}`;
+          }
+        }
 
         const totalPagesEl = document.getElementById('stat-total-pages');
         if (totalPagesEl) totalPagesEl.textContent = `${res.sheetCount || 1}`;
@@ -5686,7 +5744,8 @@
 
     _bindTopBarActions() {
       document.getElementById('btn-new-project')?.addEventListener('click', () => {
-        if (confirm('Chcete založit nový čistý projekt? Neuložené změny budou smazány.')) {
+        const confirmMsg = window.I18N ? window.I18N.t('dialogs.confirm_new_project') : 'Create a new clean project? Unsaved changes will be discarded.';
+        if (confirm(confirmMsg)) {
           this.chapterManager.clear();
           this.historyStack = [];
           this.historyIndex = -1;
@@ -5820,8 +5879,9 @@
       document.getElementById('btn-export-docx')?.addEventListener('click', () => {
         const activeChap = this.chapterManager.getActiveChapter();
         const html = this.chapterManager.compileFullDocument(this.paginationEngine.config);
-        WordExporter.exportToDocx(html, activeChap ? activeChap.title : 'Dokument', this.paginationEngine.config);
-        this._showToast('✨ Dokument byl úspěšně exportován do Wordu');
+        const defDocTitle = window.I18N ? window.I18N.t('dialogs.untitled_doc') : 'Document';
+        WordExporter.exportToDocx(html, activeChap ? activeChap.title : defDocTitle, this.paginationEngine.config);
+        this._showToast(window.I18N ? window.I18N.t('toasts.docx_success') : 'Document was successfully exported to Word');
       });
 
       document.getElementById('btn-print-pdf')?.addEventListener('click', () => {
@@ -5885,8 +5945,16 @@
         this.paginationEngine.updateConfig({ mirrorMargins: e.target.checked });
         const lblL = document.getElementById('lbl-margin-left');
         const lblR = document.getElementById('lbl-margin-right');
-        if (lblL) lblL.textContent = e.target.checked ? 'Vnitřní okraj (Vazba)' : 'Levý okraj';
-        if (lblR) lblR.textContent = e.target.checked ? 'Vnější okraj' : 'Pravý okraj';
+        if (lblL) {
+          lblL.textContent = e.target.checked 
+            ? (window.I18N ? window.I18N.t('layout.margin_inner') : 'Inner Margin (Binding)') 
+            : (window.I18N ? window.I18N.t('layout.margin_left') : 'Left Margin');
+        }
+        if (lblR) {
+          lblR.textContent = e.target.checked 
+            ? (window.I18N ? window.I18N.t('layout.margin_outer') : 'Outer Margin') 
+            : (window.I18N ? window.I18N.t('layout.margin_right') : 'Right Margin');
+        }
         this.repaginate();
       });
 
@@ -6066,7 +6134,7 @@
           this._syncMicrotypographyUI(themeKey, true);
         }
         this.repaginate();
-        this._showToast('📐 Rozvržení strany, formát a okraje šablony byly aplikovány');
+        this._showToast(window.I18N ? window.I18N.t('toasts.layout_applied') : 'Page layout, size and margins applied');
       });
 
       // Custom Template Actions
@@ -6094,7 +6162,7 @@
           try {
             TemplateManager.importTemplatesJSON(evt.target.result);
             this._initCustomTemplates();
-            this._showToast('✨ Vlastní šablony byly úspěšně importovány');
+            this._showToast(window.I18N ? window.I18N.t('toasts.templates_imported') : 'Custom templates imported successfully');
           } catch (err) {
             alert(err.message);
           }
@@ -6122,7 +6190,7 @@
         if (rSize) rSize.value = def.fontSize;
         if (bSize) bSize.textContent = def.fontSize + ' pt';
         this.repaginate();
-        this._showToast('↺ Velikost písma obnovena na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.font_size_reset') : 'Font size reset to default');
       });
 
       // 2. Line Height Slider & Reset
@@ -6141,7 +6209,7 @@
         if (rLine) rLine.value = def.lineHeight;
         if (bLine) bLine.textContent = def.lineHeight.toFixed(2);
         this.repaginate();
-        this._showToast('↺ Řádkování obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.line_height_reset') : 'Line height reset to default');
       });
 
       // 3. Letter Spacing Slider & Reset
@@ -6160,7 +6228,7 @@
         if (rSpace) rSpace.value = def.letterSpacing;
         if (bSpace) bSpace.textContent = (def.letterSpacing >= 0 ? '+' : '') + def.letterSpacing.toFixed(1) + ' px';
         this.repaginate();
-        this._showToast('↺ Prostrkání písma obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.letter_spacing_reset') : 'Letter spacing reset to default');
       });
 
       // 4. Heading Scale Slider & Reset
@@ -6179,7 +6247,7 @@
         if (rScale) rScale.value = def.headingScale;
         if (bScale) bScale.textContent = def.headingScale.toFixed(2) + '×';
         this.repaginate();
-        this._showToast('↺ Měřítko nadpisů obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.heading_scale_reset') : 'Heading scale reset to default');
       });
 
       // 5. Heading Margin Top Slider & Reset
@@ -6198,7 +6266,7 @@
         if (rTop) rTop.value = def.marginTop;
         if (bTop) bTop.textContent = def.marginTop.toFixed(1) + ' em';
         this.repaginate();
-        this._showToast('↺ Horní odsazení nadpisů obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.heading_top_reset') : 'Heading top margin reset to default');
       });
 
       // 6. Heading Margin Bottom Slider & Reset
@@ -6217,7 +6285,7 @@
         if (rBot) rBot.value = def.marginBot;
         if (bBot) bBot.textContent = def.marginBot.toFixed(2) + ' em';
         this.repaginate();
-        this._showToast('↺ Spodní odsazení nadpisů obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.heading_bot_reset') : 'Heading bottom margin reset to default');
       });
 
       // 7. Paragraph Margin Slider & Reset
@@ -6236,7 +6304,7 @@
         if (rP) rP.value = def.pMargin;
         if (bP) bP.textContent = def.pMargin.toFixed(2) + ' em';
         this.repaginate();
-        this._showToast('↺ Odsazení odstavců obnoveno na výchozí');
+        this._showToast(window.I18N ? window.I18N.t('toasts.p_margin_reset') : 'Paragraph spacing reset to default');
       });
 
       document.getElementById('insert-separator-tile')?.addEventListener('click', () => {
@@ -6248,7 +6316,7 @@
           sep.innerHTML = '<hr>';
           parent.insertBefore(sep, target.nextSibling);
         });
-        this._showToast('➕ Oddělovač byl vložen');
+        this._showToast(window.I18N ? window.I18N.t('toasts.separator_inserted') : 'Separator was inserted');
       });
 
       document.getElementById('insert-note-tile')?.addEventListener('click', () => {
@@ -6257,13 +6325,16 @@
           box.className = 'doc-callout doc-callout-task doc-element';
           box.setAttribute('data-block-type', 'callout');
           box.setAttribute('data-block-id', 'blk_' + Date.now());
+          const isCs = window.I18N && window.I18N.currentLang === 'cs';
+          const headerText = isCs ? '✏️ Úkol / Otázka k zamyšlení' : '✏️ Note / Discussion Prompt';
+          const bodyText = isCs ? 'Zde napište zadání úlohy nebo poznámku k tématu...' : 'Write your task description or note on the topic here...';
           box.innerHTML = `
-            <div class="doc-callout-header">✏️ Úkol / Otázka k zamyšlení</div>
-            <p>Zde napište zadání úlohy nebo poznámku k tématu...</p>
+            <div class="doc-callout-header">${headerText}</div>
+            <p>${bodyText}</p>
           `;
           parent.insertBefore(box, target.nextSibling);
         });
-        this._showToast('➕ Box poznámky byl vložen');
+        this._showToast(window.I18N ? window.I18N.t('toasts.note_inserted') : 'Note box was inserted');
       });
 
       document.getElementById('insert-lines-tile')?.addEventListener('click', () => {
@@ -6272,13 +6343,15 @@
           lines.className = 'doc-notes-area doc-element';
           lines.setAttribute('data-block-type', 'notes');
           lines.setAttribute('data-block-id', 'blk_' + Date.now());
+          const isCs = window.I18N && window.I18N.currentLang === 'cs';
+          const titleText = isCs ? 'Místo pro vlastní poznámky' : 'Notes Area';
           lines.innerHTML = `
-            <div class="doc-notes-title"><span>Místo pro vlastní poznámky</span></div>
+            <div class="doc-notes-title"><span>${titleText}</span></div>
             <div class="doc-notes-lines"></div>
           `;
           parent.insertBefore(lines, target.nextSibling);
         });
-        this._showToast('➕ Linkovaná plocha byla vložena');
+        this._showToast(window.I18N ? window.I18N.t('toasts.lines_inserted') : 'Lined area was inserted');
       });
 
       document.getElementById('insert-dots-tile')?.addEventListener('click', () => {
@@ -6287,13 +6360,15 @@
           dots.className = 'doc-notes-area doc-element';
           dots.setAttribute('data-block-type', 'notes');
           dots.setAttribute('data-block-id', 'blk_' + Date.now());
+          const isCs = window.I18N && window.I18N.currentLang === 'cs';
+          const titleText = isCs ? 'Místo pro náčrtky a schémata (5 mm)' : 'Sketch & Diagram Grid (5 mm)';
           dots.innerHTML = `
-            <div class="doc-notes-title"><span>Místo pro náčrtky a schémata (5 mm)</span></div>
+            <div class="doc-notes-title"><span>${titleText}</span></div>
             <div class="doc-notes-dots"></div>
           `;
           parent.insertBefore(dots, target.nextSibling);
         });
-        this._showToast('➕ Tečkovaná mřížka byla vložena');
+        this._showToast(window.I18N ? window.I18N.t('toasts.dots_inserted') : 'Dotted grid was inserted');
       });
     }
 
@@ -7064,24 +7139,38 @@
         letter: 'US Letter'
       };
       const fmtStr = formatLabels[def.format || 'a4'] || 'A4';
-      const orientStr = def.orientation === 'landscape' ? 'Na šířku ▭' : 'Na výšku ▯';
+      const orientStr = def.orientation === 'landscape' 
+        ? (window.I18N ? window.I18N.t('spec.landscape') : 'Landscape ▭') 
+        : (window.I18N ? window.I18N.t('spec.portrait') : 'Portrait ▯');
 
-      if (nameEl) nameEl.textContent = def.name || themeName;
+      let localizedName = def.name || themeName;
+      let localizedDesc = def.desc || '';
+      if (window.I18N && window.I18N.translations[window.I18N.currentLang]?.presets?.items?.[themeName]) {
+        const itemTrans = window.I18N.translations[window.I18N.currentLang].presets.items[themeName];
+        if (itemTrans.name) localizedName = itemTrans.name;
+        if (itemTrans.desc) localizedDesc = itemTrans.desc;
+      }
+
+      if (nameEl) nameEl.textContent = localizedName;
       if (formatEl) formatEl.textContent = `${fmtStr} · ${orientStr}`;
-      if (descEl) descEl.textContent = def.desc || '';
+      if (descEl) descEl.textContent = localizedDesc;
 
       if (pillsEl) {
-        const colLabel = def.columns === 3 ? '3 sloupce' : (def.columns === 2 ? '2 sloupce' : '1 sloupec');
+        const colLabel = def.columns === 3 
+          ? (window.I18N ? window.I18N.t('spec.col_3') : '3 columns') 
+          : (def.columns === 2 
+              ? (window.I18N ? window.I18N.t('spec.col_2') : '2 columns') 
+              : (window.I18N ? window.I18N.t('spec.col_1') : '1 column'));
         const marginLabel = def.mirrorMargins
-          ? `Zrcadlové okraje (${def.mLeft}/${def.mRight} mm)`
+          ? (window.I18N ? window.I18N.t('spec.margins_mirror', { left: def.mLeft, right: def.mRight }) : `Mirror margins (${def.mLeft}/${def.mRight} mm)`)
           : (def.mLeft !== def.mRight
-              ? `Asymetrické okraje (${def.mLeft} / ${def.mRight} mm)`
-              : `Okraje ${def.mTop}/${def.mLeft} mm`);
-        const fontLabel = `Písmo ${def.fontSize} pt`;
+              ? (window.I18N ? window.I18N.t('spec.margins_asym', { left: def.mLeft, right: def.mRight }) : `Asymmetric margins (${def.mLeft} / ${def.mRight} mm)`)
+              : (window.I18N ? window.I18N.t('spec.margins_sym', { top: def.mTop, left: def.mLeft }) : `Margins ${def.mTop}/${def.mLeft} mm`));
+        const fontLabel = window.I18N ? window.I18N.t('spec.font', { size: def.fontSize }) : `Font ${def.fontSize} pt`;
         const extraPills = [];
-        if (def.ebookMode) extraPills.push('<span class="template-spec-pill highlight">✨ Iniciála</span>');
-        if (def.orientation === 'landscape') extraPills.push('<span class="template-spec-pill highlight">▭ Širokoúhlá sazba</span>');
-        if (def.format === 'b5' || def.format === 'a5') extraPills.push(`<span class="template-spec-pill highlight">📖 Knižní ${def.format.toUpperCase()}</span>`);
+        if (def.ebookMode) extraPills.push(window.I18N ? window.I18N.t('spec.dropcap') : '<span class="template-spec-pill highlight">✨ Drop Cap</span>');
+        if (def.orientation === 'landscape') extraPills.push(window.I18N ? window.I18N.t('spec.widescreen') : '<span class="template-spec-pill highlight">▭ Widescreen Layout</span>');
+        if (def.format === 'b5' || def.format === 'a5') extraPills.push(window.I18N ? window.I18N.t('spec.book_format', { format: def.format.toUpperCase() }) : `<span class="template-spec-pill highlight">📖 Book ${def.format.toUpperCase()}</span>`);
 
         pillsEl.innerHTML = `
           <span class="template-spec-pill">📰 ${colLabel}</span>
@@ -7099,7 +7188,8 @@
     }
 
     _saveCurrentStyleAsTemplate() {
-      const name = prompt('Zadejte název nové šablony (např. Můj moderní magazín):');
+      const promptName = window.I18N ? window.I18N.t('dialogs.prompt_template_name') : 'Enter a name for the new template (e.g. My Modern Magazine):';
+      const name = prompt(promptName);
       if (!name || !name.trim()) return;
 
       const rSize = document.getElementById('range-font-size-base');
@@ -7156,19 +7246,21 @@
         sel.value = template.id;
         sel.dispatchEvent(new Event('change'));
       }
-      this._showToast(`✨ Šablona "${template.name}" byla uložena včetně rozvržení strany`);
+      this._showToast(window.I18N ? window.I18N.t('toasts.template_saved', { name: template.name }) : `Template "${template.name}" was saved with page layout`);
     }
 
     _saveWebStyleAsTemplate() {
       const activeChap = this.chapterManager.getActiveChapter();
       const tokens = activeChap?.styleTokens;
-      let defaultName = 'Styl z webu';
+      const isCs = window.I18N && window.I18N.currentLang === 'cs';
+      let defaultName = isCs ? 'Styl z webu' : 'Web Style';
       if (activeChap?.sourceUrl) {
         try {
-          defaultName = 'Styl webu ' + new URL(activeChap.sourceUrl).hostname.replace('www.', '');
+          defaultName = (isCs ? 'Styl webu ' : 'Web Style ') + new URL(activeChap.sourceUrl).hostname.replace('www.', '');
         } catch (e) {}
       }
-      const name = prompt('Zadejte název šablony z webu:', defaultName);
+      const promptWeb = isCs ? 'Zadejte název šablony z webu:' : 'Enter name for web template:';
+      const name = prompt(promptWeb, defaultName);
       if (!name || !name.trim()) return;
 
       const brandColor = tokens?.brandColor || '#0284c7';
@@ -7220,21 +7312,22 @@
         sel.value = template.id;
         sel.dispatchEvent(new Event('change'));
       }
-      this._showToast(`⭐ Šablona z webu "${template.name}" byla uložena`);
+      this._showToast(window.I18N ? window.I18N.t('toasts.web_template_saved', { name: template.name }) : `Web style template "${template.name}" was saved`);
     }
 
     _deleteCurrentCustomTemplate() {
       const sel = document.getElementById('sel-preset-template');
       const val = sel?.value;
       if (!val || !val.startsWith('custom-')) return;
-      if (confirm('Opravdu chcete smazat tuto vlastní šablonu?')) {
+      const confirmDelete = window.I18N ? window.I18N.t('dialogs.confirm_delete_template') : 'Are you sure you want to delete this custom template?';
+      if (confirm(confirmDelete)) {
         TemplateManager.deleteCustomTemplate(val);
         this._initCustomTemplates();
         if (sel) {
           sel.value = 'modern-edu';
           sel.dispatchEvent(new Event('change'));
         }
-        this._showToast('🗑️ Šablona byla smazána');
+        this._showToast(window.I18N ? window.I18N.t('toasts.template_deleted') : 'Template was deleted');
       }
     }
 
@@ -7329,7 +7422,7 @@
 
         const footer = document.createElement('div');
         footer.className = 'drawer-thumb-footer';
-        footer.textContent = `Strana ${pageNum}`;
+        footer.textContent = window.I18N ? window.I18N.t('drawer.page_label', { page: pageNum }) : `Page ${pageNum}`;
 
         card.appendChild(frame);
         card.appendChild(footer);
@@ -7365,10 +7458,11 @@
           if (h.tagName === 'H2' || h.classList.contains('doc-h2')) level = 'h2';
           else if (h.tagName === 'H3' || h.classList.contains('doc-h3')) level = 'h3';
 
+          const pageShort = window.I18N ? window.I18N.t('drawer.page_short', { page: pageNum }) : `p. ${pageNum}`;
           item.className = `drawer-toc-item level-${level}`;
           item.innerHTML = `
             <span>${this.chapterManager._escapeHTML(text)}</span>
-            <span style="font-weight: 700; font-size: 10px; color: var(--ui-text-muted);">s. ${pageNum}</span>
+            <span style="font-weight: 700; font-size: 10px; color: var(--ui-text-muted);">${this.chapterManager._escapeHTML(pageShort)}</span>
           `;
 
           item.addEventListener('click', () => {
@@ -7382,7 +7476,8 @@
       });
 
       if (count === 0) {
-        treeTOC.innerHTML = '<div style="font-size: 11px; color: var(--ui-text-muted); padding: 10px;">Žádné nadpisy nebyly nalezeny.</div>';
+        const noHeadings = window.I18N ? window.I18N.t('drawer.no_headings') : 'No headings were found.';
+        treeTOC.innerHTML = `<div style="font-size: 11px; color: var(--ui-text-muted); padding: 10px;">${this.chapterManager._escapeHTML(noHeadings)}</div>`;
       }
     }
 
@@ -7434,7 +7529,7 @@
         webOptgroup.innerHTML = '';
         const defaultOpt = document.createElement('option');
         defaultOpt.value = 'web-original';
-        defaultOpt.textContent = '🌐 Původní styl z webu (Aktivní URL)';
+        defaultOpt.textContent = window.I18N ? window.I18N.t('themes.opt_web_original') : '🌐 Original style from web (Active URL)';
         webOptgroup.appendChild(defaultOpt);
 
         chaptersWithTokens.forEach((ch) => {
@@ -7442,7 +7537,8 @@
           opt.value = `web-chap-${ch.id}`;
           const fName = ch.styleTokens.bodyFont ? ch.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Web Font';
           const cHex = ch.styleTokens.brandColor || '#0284c7';
-          opt.textContent = `🌐 Styl: ${ch.title.substring(0, 24)}${ch.title.length > 24 ? '…' : ''} (${fName}, ${cHex})`;
+          const stylePrefix = window.I18N && window.I18N.currentLang === 'cs' ? 'Styl' : 'Style';
+          opt.textContent = `🌐 ${stylePrefix}: ${ch.title.substring(0, 24)}${ch.title.length > 24 ? '…' : ''} (${fName}, ${cHex})`;
           webOptgroup.appendChild(opt);
         });
       }
@@ -7455,8 +7551,10 @@
           fontSelect.insertBefore(originalOpt, fontSelect.firstChild);
         }
         const activeChap = this.chapterManager.getActiveChapter();
-        const activeFont = activeChap?.styleTokens?.bodyFont ? activeChap.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Extrahované';
-        originalOpt.textContent = `🌐 Původní typografie webu (${activeFont})`;
+        const activeFont = activeChap?.styleTokens?.bodyFont ? activeChap.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : (window.I18N && window.I18N.currentLang === 'cs' ? 'Extrahované' : 'Extracted');
+        originalOpt.textContent = window.I18N && window.I18N.currentLang === 'cs' 
+          ? `🌐 Původní typografie webu (${activeFont})` 
+          : `🌐 Original web typography (${activeFont})`;
       }
     }
 
@@ -7536,7 +7634,7 @@
             this._syncWebStyleDropdowns();
             this.repaginate();
             modal?.classList.remove('open');
-            this._showToast(`✅ Rychlá ukázka "${sample.title}" byla vložena`);
+            this._showToast(window.I18N ? window.I18N.t('toasts.sample_inserted', { title: sample.title }) : `Quick sample "${sample.title}" was inserted`);
           }
         });
 
@@ -7575,7 +7673,7 @@
         const textInput = textInputEl?.value.trim() || '';
 
         if (urlInput) {
-          btnExecuteImport.textContent = '⏳ Stahuji z webu...';
+          btnExecuteImport.textContent = window.I18N ? window.I18N.t('modal_import.loading') : '⏳ Downloading from web...';
           btnExecuteImport.disabled = true;
           try {
             const parsed = await ContentExtractor.fetchFromUrl(urlInput, preserveStyles);
@@ -7587,7 +7685,7 @@
             this._syncWebStyleDropdowns();
             modal?.classList.remove('open');
             if (urlInputEl) urlInputEl.value = '';
-            this._showToast('✅ Článek byl úspěšně načten z webu');
+            this._showToast(window.I18N ? window.I18N.t('toasts.article_loaded') : 'Article was successfully loaded from the web');
 
             // 1. Initial immediate layout
             this.repaginate();
@@ -7611,7 +7709,7 @@
           } catch (err) {
             alert(err.message);
           } finally {
-            btnExecuteImport.textContent = 'Importovat a vysázet';
+            btnExecuteImport.textContent = window.I18N ? window.I18N.t('modal_import.execute') : 'Import and Typeset';
             btnExecuteImport.disabled = false;
           }
         } else if (textInput) {
@@ -7619,7 +7717,7 @@
           this.chapterManager.addChapter(parsed.title, parsed.htmlContent, '');
           modal?.classList.remove('open');
           if (textInputEl) textInputEl.value = '';
-          this._showToast('✅ Text byl vložen a vysázen');
+          this._showToast(window.I18N ? window.I18N.t('toasts.text_inserted') : 'Text was inserted and typeset');
         }
       });
     }
@@ -7650,19 +7748,30 @@
       treeList.innerHTML = '';
 
       const countBadge = document.getElementById('stat-chapter-count');
-      if (countBadge) countBadge.textContent = `${chapters.length} ${chapters.length === 1 ? 'kapitola' : 'kapitol'}`;
+      if (countBadge) {
+        if (window.I18N) {
+          countBadge.textContent = chapters.length === 1 
+            ? window.I18N.t('chapters.count_singular', { n: 1 }) 
+            : window.I18N.t('chapters.count_plural', { n: chapters.length });
+        } else {
+          countBadge.textContent = `${chapters.length} chapters`;
+        }
+      }
 
       chapters.forEach((ch, idx) => {
         const item = document.createElement('div');
         item.className = `chapter-item ${ch.id === activeId ? 'active' : ''}`;
+        const moveUpTitle = window.I18N ? window.I18N.t('chapters.move_up') : 'Move up';
+        const moveDownTitle = window.I18N ? window.I18N.t('chapters.move_down') : 'Move down';
+        const deleteTitle = window.I18N ? window.I18N.t('chapters.delete') : 'Delete chapter';
         item.innerHTML = `
           <span class="chapter-handle">⠿</span>
           <span class="chapter-badge">#${idx + 1}</span>
           <span class="chapter-name">${this.chapterManager._escapeHTML(ch.title)}</span>
           <div class="chapter-actions">
-            <button class="chapter-btn-icon btn-move-up" title="Posunout nahoru">▲</button>
-            <button class="chapter-btn-icon btn-move-down" title="Posunout dolů">▼</button>
-            <button class="chapter-btn-icon btn-del-chap" title="Odstranit kapitolu">&times;</button>
+            <button class="chapter-btn-icon btn-move-up" title="${moveUpTitle}">▲</button>
+            <button class="chapter-btn-icon btn-move-down" title="${moveDownTitle}">▼</button>
+            <button class="chapter-btn-icon btn-del-chap" title="${deleteTitle}">&times;</button>
           </div>
         `;
 
@@ -7684,7 +7793,9 @@
 
         item.querySelector('.btn-del-chap')?.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (confirm(`Opravdu smazat kapitolu "${ch.title}"?`)) {
+          const isCs = window.I18N && window.I18N.currentLang === 'cs';
+          const confirmMsg = isCs ? `Opravdu smazat kapitolu "${ch.title}"?` : `Are you sure you want to delete chapter "${ch.title}"?`;
+          if (confirm(confirmMsg)) {
             this.chapterManager.removeChapter(ch.id);
           }
         });
@@ -7723,7 +7834,7 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      this._showToast('💾 Projekt byl úspěšně uložen do souboru .urlprint');
+      this._showToast(window.I18N ? window.I18N.t('toasts.project_saved') : 'Project was saved to .urlprint file');
     }
 
     _loadProjectFromFile(file) {
@@ -7740,10 +7851,10 @@
             data.chapters.forEach(ch => {
               this.chapterManager.addChapter(ch.title, ch.htmlContent, ch.sourceUrl, ch);
             });
-            this._showToast(`📂 Projekt "${data.title || file.name}" byl úspěšně načten`);
+            this._showToast(window.I18N ? window.I18N.t('toasts.project_loaded', { title: data.title || file.name }) : `Project "${data.title || file.name}" was loaded successfully`);
           }
         } catch (err) {
-          alert('Chyba při čtení souboru: ' + err.message);
+          alert((window.I18N ? window.I18N.t('toasts.file_read_error') : 'Error reading file: ') + err.message);
         }
       };
       reader.readAsText(file);
@@ -7756,11 +7867,13 @@
 
       const history = ProjectStorage.getHistory();
       if (history.length === 0) {
+        const emptyTitle = window.I18N ? window.I18N.t('modal_projects.empty_title') : 'No saved projects in history';
+        const emptyDesc = window.I18N ? window.I18N.t('modal_projects.empty_desc') : 'Save the current project or upload a .urlprint file from your computer.';
         historyList.innerHTML = `
           <div class="empty-history-state">
             <div class="empty-history-icon">📁</div>
-            <div style="font-weight: 700; font-size: 13px;">Žádné uložené projekty v historii</div>
-            <div style="font-size: 11px;">Uložte aktuální projekt nebo nahrajte soubor .urlprint ze svého počítače.</div>
+            <div style="font-weight: 700; font-size: 13px;">${this.chapterManager._escapeHTML(emptyTitle)}</div>
+            <div style="font-size: 11px;">${this.chapterManager._escapeHTML(emptyDesc)}</div>
           </div>
         `;
         return;
@@ -7769,19 +7882,22 @@
       history.forEach(p => {
         const card = document.createElement('div');
         card.className = 'project-card';
-        const dateStr = new Date(p.savedAt).toLocaleString('cs-CZ');
+        const dateStr = new Date(p.savedAt).toLocaleString(window.I18N && window.I18N.currentLang === 'cs' ? 'cs-CZ' : 'en-US');
+        const chapCountStr = window.I18N ? window.I18N.t('modal_projects.chapters_count', { n: p.chapters?.length || 1 }) : `${p.chapters?.length || 1} chapters`;
+        const openBtnText = window.I18N ? window.I18N.t('modal_projects.card_open') : 'Open';
+        const deleteBtnTitle = window.I18N ? window.I18N.t('modal_projects.card_delete_title') : 'Delete from history';
 
         card.innerHTML = `
           <div class="project-card-info">
             <div class="project-card-title">${this.chapterManager._escapeHTML(p.title)}</div>
             <div class="project-card-meta">
               <span>📅 ${dateStr}</span>
-              <span>📑 ${p.chapters?.length || 1} kapitol</span>
+              <span>📑 ${chapCountStr}</span>
             </div>
           </div>
           <div class="project-card-actions">
-            <button class="btn-card-open">Otevřít</button>
-            <button class="btn-card-delete" title="Smazat z historie">&times;</button>
+            <button class="btn-card-open">${openBtnText}</button>
+            <button class="btn-card-delete" title="${deleteBtnTitle}">&times;</button>
           </div>
         `;
 
@@ -7795,7 +7911,7 @@
             this.chapterManager.addChapter(ch.title, ch.htmlContent, ch.sourceUrl, ch);
           });
           document.getElementById('modal-projects')?.classList.remove('open');
-          this._showToast(`📂 Projekt "${p.title}" byl otevřen`);
+          this._showToast(window.I18N ? window.I18N.t('toasts.project_opened', { title: p.title }) : `Project "${p.title}" was opened`);
         });
 
         card.querySelector('.btn-card-delete')?.addEventListener('click', () => {
@@ -7824,7 +7940,8 @@
       });
 
       document.getElementById('btn-modal-clear-history')?.addEventListener('click', () => {
-        if (confirm('Opravdu chcete vymazat celou historii projektů?')) {
+        const confirmClear = window.I18N ? window.I18N.t('dialogs.confirm_clear_history') : 'Are you sure you want to clear the entire project history?';
+        if (confirm(confirmClear)) {
           ProjectStorage.clearHistory();
           this._renderProjectHistoryModal();
         }

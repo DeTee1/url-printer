@@ -249,6 +249,45 @@ body {
   cursor: not-allowed;
 }
 
+/* Language Switcher */
+.lang-switch-group {
+  display: flex;
+  align-items: center;
+  background: var(--ui-surface-subtle);
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.lang-btn {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+}
+
+.lang-btn:hover {
+  color: var(--ui-text-heading);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.lang-btn.active {
+  background: var(--btn-primary-bg);
+  color: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
 /* Zoom Controls Box */
 .zoom-box {
   display: flex;
