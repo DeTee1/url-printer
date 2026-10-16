@@ -485,6 +485,74 @@
       }
     }
 
+    static _isChallengeOrErrorPage(doc, htmlString = '') {
+      if (!doc) return false;
+      const title = (doc.title || '').trim().toLowerCase();
+
+      // Explicit challenge interstitials
+      const challengeTitles = [
+        'attention required! | cloudflare',
+        'just a moment...',
+        'ddos protection by cloudflare',
+        'security check'
+      ];
+      if (challengeTitles.some(ct => title === ct || title.startsWith(ct))) {
+        return true;
+      }
+
+      // Check if title indicates error and the page has very little real body text (< 1500 chars)
+      const errorTitles = ['access denied', '403 forbidden', '404 not found', 'error 404', 'page not found', 'stránka nenalezena'];
+      const bodyText = (doc.body?.textContent || '').trim();
+      if (errorTitles.some(et => title === et || title.startsWith(et)) && bodyText.length < 1500) {
+        return true;
+      }
+
+      // Specific Cloudflare / Turnstile verification elements
+      if (doc.querySelector('#challenge-running, #challenge-form, #cf-challenge-running, #cf-wrapper')) {
+        if (bodyText.length < 2500) return true;
+      }
+
+      // Short cookie-blocking or JS-disabled interstitial
+      if (bodyText.length < 900) {
+        const lowerBody = bodyText.toLowerCase();
+        if (lowerBody.includes('cookies must be enabled') ||
+            lowerBody.includes('enable javascript and cookies') ||
+            lowerBody.includes('něco nám brání v načtení stránky')) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    static async _decodeResponseHtml(res) {
+      try {
+        const buffer = await res.arrayBuffer();
+        // Check content-type header first
+        const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
+        let encoding = '';
+        const ctMatch = ct.match(/charset=([a-zA-Z0-9_-]+)/i);
+        if (ctMatch) encoding = ctMatch[1].toLowerCase().trim();
+
+        if (!encoding || encoding === 'utf-8' || encoding === 'utf8') {
+          // Probe first 2048 bytes for meta charset tag
+          const preview = new TextDecoder('ascii').decode(buffer.slice(0, 2048));
+          const m = preview.match(/<meta[^>]+charset=["']?([a-zA-Z0-9_-]+)/i) ||
+                    preview.match(/<meta[^>]+content=["'][^"']*charset=([a-zA-Z0-9_-]+)/i);
+          if (m) encoding = m[1].toLowerCase().trim();
+        }
+
+        if (encoding === 'windows-1250' || encoding === 'cp1250' || encoding === 'win-1250') {
+          return new TextDecoder('windows-1250').decode(buffer);
+        } else if (encoding === 'iso-8859-2' || encoding === 'latin2') {
+          return new TextDecoder('iso-8859-2').decode(buffer);
+        }
+        return new TextDecoder('utf-8').decode(buffer);
+      } catch (e) {
+        return await res.text();
+      }
+    }
+
     static async fetchFromUrl(targetUrl, preserveStyles = true) {
       const cleanUrl = targetUrl.trim();
       if (!cleanUrl) throw new Error('Zadejte platnou URL adresu.');
@@ -497,7 +565,7 @@
           if (wikiSlug) {
             const wikiRes = await this.fetchWithTimeout(`https://${wikiLang}.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(decodeURIComponent(wikiSlug))}`, {}, 6000);
             if (wikiRes.ok) {
-              const wikiHtml = await wikiRes.text();
+              const wikiHtml = await this._decodeResponseHtml(wikiRes);
               if (wikiHtml && wikiHtml.length > 200) {
                 return this.sanitizeRawHTML(wikiHtml, cleanUrl, preserveStyles);
               }
@@ -510,48 +578,67 @@
 
       const jinaTarget = cleanUrl.startsWith('http') ? cleanUrl : 'https://' + cleanUrl;
 
+      // Prioritize full Raw HTML proxies with fast failover to Jina HTML Mode
       const proxies = [
-        // 1. Jina Reader HTML mode (Clean pre-rendered HTML)
+        // 1. Direct CORS fetch (for CORS-enabled sites)
+        async () => {
+          const res = await this.fetchWithTimeout(cleanUrl, { mode: 'cors' }, 2500);
+          if (res.ok) return await this._decodeResponseHtml(res);
+          throw new Error('Direct fetch failed');
+        },
+        // 2. AllOrigins Raw Mode
+        async () => {
+          const res = await this.fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`, {}, 3500);
+          if (res.ok) {
+            const html = await this._decodeResponseHtml(res);
+            if (html && html.length > 50 && html.includes('<')) return html;
+          }
+          throw new Error('AllOrigins Raw failed');
+        },
+        // 3. Jina Reader HTML Mode (Ultra-reliable headless browser rendered HTML)
         async () => {
           const res = await this.fetchWithTimeout('https://r.jina.ai/' + jinaTarget, {
             headers: {
               'X-Return-Format': 'html',
               'X-No-Cache': 'true'
             }
-          }, 8000);
+          }, 6000);
           if (res.ok) {
-            const html = await res.text();
+            const html = await this._decodeResponseHtml(res);
             if (html && html.includes('<')) return html;
           }
           throw new Error('Jina HTML failed');
         },
-        // 2. AllOrigins JSON API
-        async () => {
-          const res = await this.fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(cleanUrl)}`, {}, 7000);
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.contents && data.contents.length > 50) return data.contents;
-          }
-          throw new Error('AllOrigins failed');
-        },
-        // 3. Direct CORS fetch
-        async () => {
-          const res = await this.fetchWithTimeout(cleanUrl, { mode: 'cors' }, 4000);
-          if (res.ok) return await res.text();
-          throw new Error('Direct fetch failed');
-        },
         // 4. CodeTabs CORS Proxy
         async () => {
-          const res = await this.fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`, {}, 6000);
+          const res = await this.fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanUrl)}`, {}, 3500);
           if (res.ok) {
-            const html = await res.text();
+            const html = await this._decodeResponseHtml(res);
             if (html && html.length > 50) return html;
           }
           throw new Error('CodeTabs failed');
         },
-        // 5. Jina Reader Markdown fallback
+        // 5. AllOrigins JSON API
         async () => {
-          const res = await this.fetchWithTimeout('https://r.jina.ai/' + jinaTarget, { headers: { 'X-No-Cache': 'true' } }, 8000);
+          const res = await this.fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(cleanUrl)}`, {}, 3500);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.contents && data.contents.length > 50) return data.contents;
+          }
+          throw new Error('AllOrigins JSON failed');
+        },
+        // 6. CorsProxy.io
+        async () => {
+          const res = await this.fetchWithTimeout(`https://corsproxy.io/?url=${encodeURIComponent(cleanUrl)}`, {}, 3500);
+          if (res.ok) {
+            const html = await this._decodeResponseHtml(res);
+            if (html && html.length > 50 && html.includes('<')) return html;
+          }
+          throw new Error('CorsProxy.io failed');
+        },
+        // 7. Jina Reader Markdown mode (Last resort)
+        async () => {
+          const res = await this.fetchWithTimeout('https://r.jina.ai/' + jinaTarget, { headers: { 'X-No-Cache': 'true' } }, 6000);
           if (res.ok) {
             const md = await res.text();
             return { isMarkdown: true, content: md };
@@ -560,11 +647,30 @@
         }
       ];
 
-      for (const p of proxies) {
+      for (let i = 0; i < proxies.length; i++) {
+        const p = proxies[i];
         try {
           const data = await p();
           if (data && typeof data === 'string' && data.length > 50 && data.includes('<')) {
-            return this.sanitizeRawHTML(data, cleanUrl, preserveStyles);
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(data, 'text/html');
+            if (this._isChallengeOrErrorPage(doc, data)) {
+              throw new Error('Bot challenge detected');
+            }
+            let baseUrl = cleanUrl || window.location.href;
+            try {
+              const baseEl = doc.querySelector('base[href]');
+              if (baseEl && baseEl.getAttribute('href')) {
+                baseUrl = new URL(baseEl.getAttribute('href'), baseUrl).href;
+              }
+            } catch (e) {}
+
+            // Inline external stylesheets with short non-blocking timeout
+            await this._inlineExternalStylesheets(doc, baseUrl);
+
+            const sanitized = this.sanitizeRawHTML(doc.documentElement.outerHTML, cleanUrl, preserveStyles);
+            sanitized.rawHtml = doc.documentElement.outerHTML;
+            return sanitized;
           }
           if (data && typeof data === 'object' && data.isMarkdown) {
             return this.parseMarkdownOrHTML(data.content, cleanUrl, preserveStyles);
@@ -575,10 +681,77 @@
       throw new Error(`Zabezpečení webu "${cleanUrl}" zabránilo přímému stažení. Otevřete stránku, zkopírujte text (Ctrl+A, Ctrl+C) a vložte jej do textového pole.`);
     }
 
+    static async _inlineExternalStylesheets(doc, baseUrl) {
+      if (!doc || !baseUrl) return;
+      try {
+        const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"], link[rel="preload"][as="style"]'));
+        const candidateLinks = links.filter(l => {
+          const href = l.getAttribute('href') || '';
+          if (!href) return false;
+          if (href.includes('fonts.googleapis.com') || href.includes('fonts.bunny.net') || href.includes('use.typekit.net')) return false;
+          return true;
+        }).slice(0, 6);
+
+        if (candidateLinks.length === 0) return;
+
+        const promises = candidateLinks.map(async (l) => {
+          try {
+            const rawHref = l.getAttribute('href');
+            const absoluteUrl = new URL(rawHref, baseUrl).href;
+            let cssText = '';
+
+            try {
+              const res = await this.fetchWithTimeout(absoluteUrl, { mode: 'cors' }, 1800);
+              if (res.ok) {
+                cssText = await res.text();
+              }
+            } catch (e) {}
+
+            if (!cssText || cssText.length < 20 || cssText.includes('<html')) {
+              try {
+                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(absoluteUrl)}`;
+                const pRes = await this.fetchWithTimeout(proxyUrl, {}, 2500);
+                if (pRes.ok) {
+                  cssText = await pRes.text();
+                }
+              } catch (err) {}
+            }
+
+            if (cssText && cssText.length > 20 && !cssText.includes('<html')) {
+              // Rewrite relative url(...) in stylesheet to absolute URLs
+              cssText = cssText.replace(/url\(\s*(['"]?)(?!data:|https?:|\/\/)([^'")]+)\1\s*\)/gi, (m, q, rel) => {
+                try {
+                  const resolved = new URL(rel.trim(), absoluteUrl).href;
+                  return `url("${resolved}")`;
+                } catch (e) {
+                  return m;
+                }
+              });
+
+              const styleEl = doc.createElement('style');
+              styleEl.setAttribute('data-inlined-css-from', absoluteUrl);
+              styleEl.textContent = cssText;
+              doc.head ? doc.head.appendChild(styleEl) : doc.body.appendChild(styleEl);
+            }
+          } catch (e) {}
+        });
+
+        await Promise.allSettled(promises);
+      } catch (e) {}
+    }
 
     static sanitizeRawHTML(htmlString, sourceUrl = '', preserveStyles = true) {
+      if (!htmlString || typeof htmlString !== 'string') {
+        throw new Error('Prázdný nebo neplatný HTML obsah');
+      }
+
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlString, 'text/html');
+
+      // Check for bot, paywall, or cookie barriers without false-flagging tech articles
+      if (this._isChallengeOrErrorPage(doc, htmlString)) {
+        throw new Error('Detekována blokace obsahu, captcha nebo chybová stránka webu.');
+      }
 
       let baseUrl = sourceUrl || window.location.href;
       try {
@@ -588,16 +761,54 @@
         }
       } catch (e) {}
 
-      // 1. Extract Design Tokens (Brand Color, Google Fonts, Typography) before stripping
-      const styleTokens = this._extractWebTokens(doc, sourceUrl);
+      // 1. Identify Article Title - prioritize actual article headline before header logo / <title>
+      const isHeaderLogo = (el) => {
+        if (!el) return true;
+        if (el.closest('header, nav, .site-header, .header, .navbar')) return true;
+        const cls = (el.className || '').toLowerCase();
+        if (cls.includes('logo') || cls.includes('brand') || cls.includes('site-title') || cls.includes('emblem') || cls.includes('masthead') || cls.includes('banner')) return true;
+        const txt = el.textContent.trim().toLowerCase();
+        if (sourceUrl) {
+          try {
+            const host = new URL(sourceUrl).hostname.toLowerCase().replace(/^www\./, '');
+            const baseHost = host.split('.')[0];
+            if (txt === host || txt === baseHost || (txt.length < 15 && txt.includes(baseHost))) return true;
+          } catch (e) {}
+        }
+        if (txt.length < 15 && (txt === 'idnes.cz' || txt === 'seznam zprávy' || txt === 'novinky.cz' || txt === 'aktualne.cz' || txt === 'deník n' || txt === 'the verge' || txt === 'bbc news')) {
+          return true;
+        }
+        return false;
+      };
 
-      // 2. Resolve all image URLs to absolute paths
-      this._resolveAllImages(doc, baseUrl);
-
-      // 3. Selective Article Root Detection (Prevents Readability from cutting off Gutenberg/multi-block articles)
+      const allH1s = Array.from(doc.querySelectorAll('article h1, main h1, [itemprop="headline"], .c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], .articleNewDetail__title, .e-web-aktualne-articles-show__title, .article-title, .post-title, h1'));
+      let articleTitleEl = allH1s.find(h => !isHeaderLogo(h));
       let title = '';
-      const h1El = doc.querySelector('h1.entry-title, .entry-header h1, h1, title');
-      if (h1El) title = h1El.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').replace(/\s*[-–|].*$/, '').trim();
+      if (articleTitleEl) {
+        title = articleTitleEl.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
+      }
+      if (!title) {
+        const ogTitle = doc.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
+        if (ogTitle) {
+          title = (ogTitle.getAttribute('content') || '').trim();
+        }
+      }
+      if (!title) {
+        const titleTag = doc.querySelector('title');
+        if (titleTag) {
+          title = titleTag.textContent.trim();
+        }
+      }
+      if (!title && allH1s.length > 0) {
+        articleTitleEl = allH1s[0];
+        title = articleTitleEl.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
+      }
+      // If title came from <title> or meta tag, clean trailing site brand only if delimited with padded separator
+      if (title && (!articleTitleEl || isHeaderLogo(articleTitleEl))) {
+        title = title.replace(/\s+[-–—|•·»]\s+[^-\n]{2,40}$/i, '').trim();
+      } else if (title) {
+        title = title.replace(/\s+[|•·»]\s+[^|\n]{2,30}$/i, '').trim();
+      }
       if (!title && sourceUrl) {
         try {
           const u = new URL(sourceUrl);
@@ -608,52 +819,16 @@
       }
       if (!title) title = 'Nová kapitola';
 
-      const unwantedSelectors = [
-        'script', 'style', 'noscript', 'nav', 'header', 'footer', 'aside',
-        '.navbar', '.nav', '.footer', '.header', '.ad', '.ads', '.advertisement',
-        '.cookie-banner', '.cookie-consent', '.popup', '.modal', '.sidebar',
-        '.social-share', '.share-buttons', '.comments', '#comments', '.newsletter-signup',
-        '.mw-jump-link', '.mw-editsection', '.reference', '.reflist', '.hidden', '.noprint',
-        '.navbox', '.vertical-navbox', '.catlinks', '#catlinks',
-        '.breadcrumbs', '.breadcrumb', '#breadcrumbs', '.kadence-breadcrumbs', '#kadence-breadcrumbs',
-        '.yoast-breadcrumbs', '.rank-math-breadcrumb', '.schema-breadcrumb', '[aria-label*="breadcrumb" i]',
-        '.menu', '.menu-item', '.site-navigation', '#site-navigation', '.main-navigation', '.sub-menu',
-        '.wp-block-navigation', '.wp-block-pages-list', '.widget_nav_menu', '.site-header', '#masthead',
-        '.site-footer', '#colophon', '.mobile-header', '#mobile-header',
-        '.post-navigation', '.navigation', '.nav-links', '.prev-next', '.pagination', '.nav-previous', '.nav-next',
-        '.entry-meta', '.meta', '.post-meta', '.entry-taxonomies', '.term-links', '.category-links',
-        '.widget', '.widget-area', '.sidebar', '.elementor-widget-sidebar', '.elementor-nav-menu', '.elementor-widget-nav-menu',
-        '.entry-related', '.related-posts', '.related-articles', '.wp-block-latest-posts', '.yarpp-related', '.jp-relatedposts',
-        '.splide', '.splide__track', '.carousel',
-        '.tags-links', '.cat-links', '.post-categories', '.entry-footer', '.post-author', '.author-box',
-        '.toc', '#toc', '.table-of-contents', '.ez-toc-container', '.lwptoc', '.rank-math-toc', '.wp-block-kadence-table-of-contents'
-      ];
-
-      // Identify the semantic main container
-      let mainContainer = null;
-      const semanticSelectors = [
-        '.entry-content',
-        '.single-content',
-        '.post-content',
-        '.article-content',
-        '.post_content',
-        '.article-body',
-        '.story-body',
-        '.mw-parser-output',
-        'article',
-        'main'
-      ];
-
-      for (const sel of semanticSelectors) {
-        const found = doc.querySelector(sel);
-        if (found && found.textContent.trim().length > 150) {
-          mainContainer = found;
-          break;
-        }
+      // Mark probe attribute on article title for resilient CSS extraction
+      if (articleTitleEl) {
+        articleTitleEl.setAttribute('data-up-probe', 'h1');
       }
 
-      // If no standard article container found and not preserveStyles, try Readability
-      if (!mainContainer && typeof Readability !== 'undefined' && !preserveStyles) {
+      // 2. Identify the semantic main container using scoring engine
+      let mainContainer = this._findBestArticleContainer(doc);
+
+      // If no standard article container found, try Readability
+      if ((!mainContainer || mainContainer === doc.body) && typeof Readability !== 'undefined') {
         try {
           const docClone = doc.cloneNode(true);
           const reader = new Readability(docClone, {
@@ -677,14 +852,75 @@
         mainContainer = doc.body;
       }
 
-      // Clean unwanted elements from the selected main container
-      unwantedSelectors.forEach(sel => {
-        mainContainer.querySelectorAll(sel).forEach(el => el.remove());
-      });
+      // Mark probe attributes inside main container for reliable getComputedStyle
+      if (mainContainer) {
+        const probeP = Array.from(mainContainer.querySelectorAll('p')).find(p => p.textContent.trim().length > 25);
+        if (probeP) probeP.setAttribute('data-up-probe', 'p');
+        const probeH2 = mainContainer.querySelector('h2');
+        if (probeH2) probeH2.setAttribute('data-up-probe', 'h2');
+        const probeLink = mainContainer.querySelector('p a, a');
+        if (probeLink) probeLink.setAttribute('data-up-probe', 'a');
+      }
+
+      const articleContext = {
+        mainContainer: mainContainer,
+        articleTitleEl: articleTitleEl,
+        storyParagraphs: mainContainer ? Array.from(mainContainer.querySelectorAll('p')).filter(p => p.textContent.trim().length > 25) : []
+      };
+
+      // 3. Extract Design Tokens COUPLED with the detected article context
+      const styleTokens = this._extractWebTokens(doc, sourceUrl, articleContext);
+
+      // 4. Resolve all image URLs to absolute paths
+      this._resolveAllImages(doc, baseUrl);
+
+      // 5. Extract Lead / Hero Image (from metadata, header, or article hero)
+      const leadImage = this._extractLeadImage(doc, baseUrl, mainContainer);
+
+      // Clean unwanted clutter from the selected main container
+      // Preserve video iframes (YouTube, Vimeo) for QR card generation, remove tracking/ad iframes
+      if (mainContainer) {
+        mainContainer.querySelectorAll('iframe').forEach(ifr => {
+          const s = (ifr.getAttribute('src') || '').toLowerCase();
+          if (!s.includes('youtube') && !s.includes('youtu.be') && !s.includes('vimeo')) {
+            ifr.remove();
+          }
+        });
+      }
+
+      const unwantedSelectors = [
+        'script', 'style', 'noscript', 'svg', 'canvas', 'form', 'nav',
+        'footer', 'header', 'aside', 'button', 'input', 'select', 'textarea',
+        '.advertisement', '.ad', '.ad-slot', '.adsbygoogle',
+        '.social-share', '.share-buttons', '.social-links', '.share-bar', '.social-box',
+        '.share-box', '.post-share', '.article-share', '.social-media', '.social-icons',
+        '.cookie-banner', '.cookie-consent', '.qc-cmp2-container',
+        '.newsletter-signup', '.popup', '.modal', '.banner', '.promo',
+        '.comments', '#comments', '.related-articles', '.recommended', '.related-posts',
+        '.sidebar', '.navigation', '.menu', '.breadcrumbs', '.breadcrumb', 'nav.breadcrumb',
+        '[aria-label="breadcrumb"]', '.b-breadcrumbs', '.c-breadcrumbs', '.hawk-widget',
+        '.price-comparison', '.taboola', '.outbrain', '.jwplayer', '.article-tags',
+        '.article-topics', '.article-categories', '.byline-social', '.share-bar',
+        '.audio-player', '.audio-player-wrapper', '.video-player-wrapper', '.player-controls',
+        '.audio-controls', '.video-controls', '.vjs-control-bar', '.jw-controls',
+        '.jw-controlbar', '.media-controls', '.podcast-controls', '.player-bar',
+        '.player-container', '.mejs-container', '.play-button', '.audio-box',
+        '[class*="social-share"]', '[class*="share-button"]', '[class*="player-control"]',
+        '[class*="audio-player"]', '[class*="video-player"]', '[id*="player-control"]',
+        'a[href*="facebook.com/sharer"]', 'a[href*="twitter.com/intent"]', 'a[href*="linkedin.com/share"]',
+        'a[href*="pinterest.com/pin"]', 'a[href*="t.me/share"]', 'a[href*="api.whatsapp.com"]',
+        'a[href*="reddit.com/submit"]'
+      ];
+      if (mainContainer) {
+        unwantedSelectors.forEach(sel => {
+          mainContainer.querySelectorAll(sel).forEach(el => el.remove());
+        });
+      }
 
       const cleanContainer = document.createElement('div');
       cleanContainer.className = 'doc-content';
 
+      // Heading 1 Title
       const titleH1 = document.createElement('h1');
       titleH1.className = 'doc-element doc-h1';
       titleH1.textContent = title;
@@ -696,17 +932,69 @@
       cleanContainer.appendChild(titleH1);
 
       // Check author/byline metadata
-      const authorMeta = doc.querySelector('meta[name="author"], meta[property="article:author"], .author-name, .byline, .author');
+      const authorMeta = doc.querySelector('meta[name="author"], meta[property="article:author"], .author-name, .byline, .author, .c-article-author');
       const authorName = authorMeta ? (authorMeta.getAttribute('content') || authorMeta.textContent.trim()) : '';
-      if (authorName && authorName.length < 50) {
+      if (authorName && authorName.length < 60) {
         const metaDiv = document.createElement('div');
         metaDiv.className = 'doc-source-meta doc-element';
         metaDiv.innerHTML = `✍️ <strong>${this._escapeHTML(authorName)}</strong>${sourceUrl ? ` &bull; <em>${this._escapeHTML(new URL(sourceUrl, window.location.href).hostname)}</em>` : ''}`;
         cleanContainer.appendChild(metaDiv);
       }
 
+      // Check for perex / lead paragraph outside mainContainer
+      const perexEl = doc.querySelector('p.b-detail__perex, p.c-lead, .article__lead, .lead, .perex, .intro, .c-article-teaser, .article-teaser, [data-dot="mol-article-perex"]');
+      if (perexEl && !mainContainer.contains(perexEl)) {
+        const perexText = perexEl.textContent.trim();
+        if (perexText && perexText.length > 20) {
+          const leadP = document.createElement('p');
+          leadP.className = 'doc-element lead-paragraph';
+          leadP.innerHTML = this._cleanInlineContent(perexEl.innerHTML, baseUrl);
+          this._preserveElementStyles(leadP, perexEl);
+          cleanContainer.appendChild(leadP);
+        }
+      }
+
+      // Insert Lead Image if found and valid
+      if (leadImage && leadImage.src) {
+        const leadFig = document.createElement('figure');
+        leadFig.className = 'doc-element doc-lead-figure';
+        leadFig.setAttribute('data-block-type', 'figure');
+        leadFig.innerHTML = `
+          <img src="${this._escapeHTML(leadImage.src)}" alt="${this._escapeHTML(leadImage.alt || title)}" class="doc-element" loading="lazy" onerror="this.parentElement.style.display='none'">
+          ${leadImage.caption ? `<figcaption>${this._escapeHTML(leadImage.caption)}</figcaption>` : ''}
+        `;
+        cleanContainer.appendChild(leadFig);
+      }
+
       const flatElements = [];
       this._flattenDomBlocks(mainContainer, flatElements, preserveStyles, baseUrl);
+
+      // Global Image Deduplication & Clutter Pruning
+      const seenImageSrcs = new Set();
+      if (leadImage && leadImage.src) {
+        seenImageSrcs.add(leadImage.src.split('?')[0].toLowerCase());
+      }
+
+      for (let i = flatElements.length - 1; i >= 0; i--) {
+        const el = flatElements[i];
+        const imgs = Array.from(el.tagName === 'IMG' ? [el] : el.querySelectorAll?.('img') || []);
+        for (const img of imgs) {
+          const rawSrc = img.getAttribute('src') || '';
+          const cleanSrc = rawSrc.split('?')[0].toLowerCase();
+          if (cleanSrc) {
+            if (seenImageSrcs.has(cleanSrc)) {
+              if (el.tagName === 'FIGURE' || el.tagName === 'IMG') {
+                flatElements.splice(i, 1);
+                break;
+              } else {
+                img.remove();
+              }
+            } else {
+              seenImageSrcs.add(cleanSrc);
+            }
+          }
+        }
+      }
 
       // Reorder if infobox is the very first element: place first paragraph before infobox for balanced Page 1
       if (flatElements.length > 1 && flatElements[0].classList?.contains('doc-table-infobox')) {
@@ -743,12 +1031,230 @@
         cleanContainer.appendChild(el);
       });
 
+      // Ensure 100% of relative links and image sources in cleanContainer are converted to absolute URLs
+      if (baseUrl) {
+        cleanContainer.querySelectorAll('a[href]').forEach(a => {
+          const href = a.getAttribute('href');
+          if (href && !/^(?:https?:|mailto:|tel:|javascript:|#|data:)/i.test(href)) {
+            try {
+              a.setAttribute('href', new URL(href, baseUrl).href);
+            } catch (e) {}
+          }
+        });
+        cleanContainer.querySelectorAll('img[src]').forEach(img => {
+          const src = img.getAttribute('src');
+          if (src && !/^(?:https?:|data:)/i.test(src)) {
+            try {
+              img.setAttribute('src', new URL(src, baseUrl).href);
+            } catch (e) {}
+          }
+        });
+      }
+
       return {
         title: title,
         sourceUrl: sourceUrl,
         htmlContent: cleanContainer.innerHTML,
-        styleTokens: styleTokens
+        styleTokens: styleTokens,
+        rawHtml: htmlString
       };
+    }
+
+    static _findBestArticleContainer(doc) {
+      if (!doc) return null;
+
+      const candidateSelectors = [
+        '.b-detail__content',
+        '.c-article__body',
+        '.c-article-body',
+        'div[data-cy="article-body"]',
+        '.c-editorial-content',
+        '.b-article__body',
+        '#article-body',
+        '.article-body',
+        '[data-type="article-body"]',
+        '.text-copy',
+        '.article__content',
+        '.article__body',
+        '.core-container',
+        '.body-content',
+        '.mol-article-content',
+        '[data-dot="mol-article-content"]',
+        '[itemprop="articleBody"]',
+        '.entry-content',
+        '.single-content',
+        '.post-content',
+        '.article-content',
+        '.articleNewDetail__content',
+        '.articleDetail__content',
+        '.article-detail__content',
+        '.article-detail',
+        '.article__main',
+        '.article-text',
+        '.e-web-aktualne-articles-show__content',
+        '.story-body',
+        '.content-body',
+        '.post_content',
+        '.post-body',
+        '.clanek-obsah',
+        '.clanek__obsah',
+        '.text-content',
+        '.markdown-body',
+        '.theme-doc-markdown',
+        '.vp-doc',
+        '.mw-parser-output',
+        'article',
+        '[role="main"]',
+        'main'
+      ];
+
+      let bestContainer = null;
+      let highestScore = 0;
+      const scoredContainers = new Set();
+
+      candidateSelectors.forEach(sel => {
+        try {
+          const elements = Array.from(doc.querySelectorAll(sel));
+          elements.forEach(el => {
+            if (scoredContainers.has(el)) return;
+            scoredContainers.add(el);
+
+            const paragraphs = Array.from(el.querySelectorAll('p')).filter(p => p.textContent.trim().length > 20);
+            const headings = Array.from(el.querySelectorAll('h2, h3, h4, h5'));
+            const textLength = el.textContent.trim().length;
+
+            if (textLength < 80) return;
+
+            const linkTextLength = Array.from(el.querySelectorAll('a')).reduce((acc, a) => acc + a.textContent.trim().length, 0);
+            const linkDensity = textLength > 0 ? (linkTextLength / textLength) : 0;
+            if (linkDensity > 0.6 && paragraphs.length < 4) return;
+
+            let score = (paragraphs.length * 120) + (headings.length * 45) + Math.min(textLength / 10, 600);
+            if (linkDensity > 0.35) score -= (linkDensity * 300);
+
+            if (sel.includes('article') || sel.includes('content') || sel.includes('entry') || sel.includes('b-detail') || sel.includes('body')) {
+              score += 150;
+            }
+
+            if (bestContainer) {
+              if (el.contains(bestContainer)) {
+                // el is an ancestor of bestContainer. Prefer the more focused child if it has sufficient content
+                const bestPs = bestContainer.querySelectorAll('p').length;
+                if (bestPs >= 3) return;
+              } else if (bestContainer.contains(el)) {
+                // el is a child of bestContainer. If el contains the bulk of the content, prefer the child!
+                const childPs = paragraphs.length;
+                const parentPs = bestContainer.querySelectorAll('p').length;
+                if (childPs >= 3 && childPs >= parentPs * 0.6) {
+                  highestScore = score;
+                  bestContainer = el;
+                  return;
+                }
+              }
+            }
+
+            if (score > highestScore) {
+              highestScore = score;
+              bestContainer = el;
+            }
+          });
+        } catch (e) {}
+      });
+
+      return bestContainer || doc.querySelector('article, main, body');
+    }
+
+    static _extractLeadImage(doc, baseUrl, mainContainer = null) {
+      if (!doc) return null;
+
+      const isBadImage = (src, alt = '') => {
+        if (!src) return true;
+        const s = src.toLowerCase();
+        const a = alt.toLowerCase();
+        if (s.startsWith('data:image/svg') || s.includes('spacer') || s.includes('pixel') || s.includes('1x1') || s.includes('avatar') || s.includes('author') || s.includes('logo') || s.includes('icon') || s.includes('sprite') || s.includes('placeholder') || s.includes('share-button') || s.includes('gradient_fill') || s.includes('badge') || s.includes('tracking') || s.includes('follow-') || s.includes('feed-icon')) {
+          return true;
+        }
+        if (a.includes('logo') || a.includes('avatar') || a.includes('ikona') || a.includes('autor') || a.includes('google') || a.includes('sledovat') || a.includes('follow')) {
+          return true;
+        }
+        return false;
+      };
+
+      const resolveSrc = (rawSrc) => {
+        if (!rawSrc) return '';
+        let src = rawSrc.trim();
+        if (src.startsWith('//')) return 'https:' + src;
+        if (!src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:') && baseUrl) {
+          try { return new URL(src, baseUrl).href; } catch (e) { return ''; }
+        }
+        return src;
+      };
+
+      // 1. Check OpenGraph / Twitter meta tags
+      const ogMeta = doc.querySelector('meta[property="og:image:secure_url"], meta[property="og:image"], meta[name="twitter:image:src"], meta[name="twitter:image"], link[rel="image_src"]');
+      let ogUrl = ogMeta ? (ogMeta.getAttribute('content') || ogMeta.getAttribute('href') || '') : '';
+      if (ogUrl) ogUrl = resolveSrc(ogUrl);
+      if (ogUrl && !isBadImage(ogUrl)) {
+        return {
+          src: ogUrl,
+          alt: doc.querySelector('meta[property="og:image:alt"]')?.getAttribute('content') || '',
+          caption: ''
+        };
+      }
+
+      // 2. Check Semantic DOM Lead Image Selectors
+      const heroSelectors = [
+        'figure.lead-image img',
+        'figure.article__hero img',
+        'figure.article-lead-image img',
+        '.b-detail__img img',
+        '.c-article-header figure img',
+        '.c-article-header img',
+        '.article__header figure img',
+        '.article__header img',
+        '.opener-foto img',
+        '.article-top-image img',
+        '.hero-image img',
+        '.main-image img',
+        '[itemprop="image"]',
+        'img[fetchpriority="high"]',
+        'figure.wp-block-post-featured-image img',
+        '.entry-header img'
+      ];
+
+      for (const sel of heroSelectors) {
+        const img = doc.querySelector(sel);
+        if (img) {
+          let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-highres') || '';
+          const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset') || '';
+          if ((!src || src.startsWith('data:image')) && srcset) {
+            const parts = srcset.split(',').map(s => s.trim().split(' ')[0]);
+            if (parts.length > 0) src = parts[parts.length - 1];
+          }
+          src = resolveSrc(src);
+          const alt = img.getAttribute('alt') || '';
+          if (src && !isBadImage(src, alt)) {
+            const cap = img.closest('figure')?.querySelector('figcaption, .caption, .b-detail__img-caption')?.textContent?.trim() || alt;
+            return { src, alt, caption: cap };
+          }
+        }
+      }
+
+      // 3. Check first large image in main container
+      if (mainContainer) {
+        const firstImg = mainContainer.querySelector('figure img, img');
+        if (firstImg) {
+          let src = firstImg.getAttribute('src') || firstImg.getAttribute('data-src') || firstImg.getAttribute('data-original') || '';
+          src = resolveSrc(src);
+          const alt = firstImg.getAttribute('alt') || '';
+          if (src && !isBadImage(src, alt)) {
+            const cap = firstImg.closest('figure')?.querySelector('figcaption')?.textContent?.trim() || alt;
+            return { src, alt, caption: cap };
+          }
+        }
+      }
+
+      return null;
     }
 
     static _preserveElementStyles(targetElement, sourceNode) {
@@ -758,15 +1264,13 @@
       const classList = Array.from(sourceNode.classList || []);
       const preservedStyles = [];
 
-      // 1. Direct inline styles extraction
+      // 1. Direct inline styles extraction with print contrast safety
       if (styleAttr) {
         const safeProps = [
           'color', 'background-color', 'background', 'border', 'border-left',
           'border-right', 'border-top', 'border-bottom', 'border-color', 'border-radius',
           'border-style', 'border-width', 'font-weight', 'font-style', 'font-family',
-          'font-size', 'line-height', 'text-align', 'text-decoration', 'letter-spacing',
-          'text-transform', 'padding', 'padding-left', 'padding-right', 'padding-top', 'padding-bottom',
-          'margin-top', 'margin-bottom'
+          'text-align', 'text-decoration', 'letter-spacing', 'text-transform'
         ];
 
         const decls = styleAttr.split(';');
@@ -796,25 +1300,63 @@
         });
       }
 
-      // 2. Alignment classes
+      // 2. Multi-Framework Class Parsing (Tailwind, WordPress Gutenberg, Bootstrap)
+      const classAttr = sourceNode.getAttribute('class') || '';
+      
+      // A. Tailwind arbitrary colors (e.g. text-[#1e3a8a], bg-[#f0f9ff])
+      const twHexText = classAttr.match(/text-\[#([0-9a-f]{3,8})\]/i);
+      if (twHexText) {
+        preservedStyles.push(`color: #${twHexText[1]}`);
+      }
+
+      const twHexBg = classAttr.match(/bg-\[#([0-9a-f]{3,8})\]/i);
+      if (twHexBg) {
+        preservedStyles.push(`background-color: #${twHexBg[1]}`);
+      }
+
+      classList.forEach(cls => {
+        const c = cls.toLowerCase();
+
+        // B. Tailwind named color utilities (e.g. text-blue-700, text-emerald-800)
+        const twTextMatch = c.match(/^text-([a-z]+)-(500|600|700|800|900)$/i);
+        if (twTextMatch) {
+          const hex = ContentExtractor._normalizeColorToHex(`${twTextMatch[1]}-${twTextMatch[2]}`);
+          if (hex) preservedStyles.push(`color: ${hex}`);
+        }
+
+        // C. Typography utilities
+        if (c === 'font-bold' || c === 'font-black') preservedStyles.push('font-weight: 700');
+        else if (c === 'font-semibold') preservedStyles.push('font-weight: 600');
+        else if (c === 'font-medium') preservedStyles.push('font-weight: 500');
+        else if (c === 'italic') preservedStyles.push('font-style: italic');
+        else if (c === 'uppercase') preservedStyles.push('text-transform: uppercase');
+        else if (c === 'tracking-wide') preservedStyles.push('letter-spacing: 0.05em');
+
+        // D. Bootstrap / Universal colors
+        if (c === 'text-primary') preservedStyles.push('color: var(--doc-primary)');
+        else if (c === 'text-secondary') preservedStyles.push('color: var(--doc-secondary)');
+        else if (c === 'text-muted') preservedStyles.push('color: var(--doc-text-muted, #64748b)');
+      });
+
+      // 3. Alignment classes
       if (classList.some(c => c.includes('has-text-align-center') || c.includes('text-center') || c.includes('aligncenter'))) {
         targetElement.setAttribute('data-align', 'center');
         preservedStyles.push('text-align: center');
       } else if (classList.some(c => c.includes('has-text-align-right') || c.includes('text-right') || c.includes('alignright'))) {
         targetElement.setAttribute('data-align', 'right');
         preservedStyles.push('text-align: right');
-      } else if (classList.some(c => c.includes('has-text-align-justify') || c.includes('text-justify'))) {
+      } else if (classList.some(c => c.includes('has-text-align-justify') || c.includes('text-justify') || c.includes('text-align-justify'))) {
         targetElement.setAttribute('data-align', 'justify');
         preservedStyles.push('text-align: justify');
       }
 
-      // 3. Lead paragraph / Perex detection
-      if (classList.some(c => /^(?:lead|perex|intro|entry-intro|has-large-font-size|is-style-lead)$/i.test(c))) {
+      // 4. Lead paragraph / Perex detection
+      if (classList.some(c => /^(?:lead|perex|intro|entry-intro|has-large-font-size|is-style-lead|subtitle)$/i.test(c))) {
         targetElement.classList.add('lead-paragraph');
       }
 
-      // 4. Highlight / Accent text
-      if (classList.some(c => /has-accent|has-primary|highlight/i.test(c))) {
+      // 5. Highlight / Accent text
+      if (classList.some(c => /has-accent|has-primary|highlight|mark/i.test(c))) {
         targetElement.classList.add('doc-highlight');
       }
 
@@ -833,7 +1375,14 @@
       const tag = node.tagName ? node.tagName.toLowerCase() : '';
       if (!tag) return;
 
-      if (['script', 'style', 'noscript', 'nav', 'footer', 'header', 'aside'].includes(tag)) {
+      if (['script', 'style', 'noscript', 'nav', 'footer', 'header', 'aside', 'button', 'input', 'select', 'textarea', 'form', 'audio', 'svg', 'canvas'].includes(tag)) {
+        return;
+      }
+
+      const classListStr = (node.className && typeof node.className === 'string') ? node.className.toLowerCase() : '';
+      const idStr = (node.id && typeof node.id === 'string') ? node.id.toLowerCase() : '';
+      if (/(?:social|share|sharing|player|podcast|audio-controls|media-controls|video-controls|jw-|vjs-|like-btn|reaction|bookmark|recirc|recirculation|related-posts|related-articles|more-stories|popular-posts|trending|outbrain|taboola|advertisement|newsletter)/.test(classListStr) ||
+          /(?:recirc|related-posts|social-share|newsletter-signup)/.test(idStr)) {
         return;
       }
 
@@ -894,30 +1443,6 @@
             ${videoId ? `<div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/${videoId}/hqdefault.jpg" alt="${this._escapeHTML(cleanTitle)}" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>` : ''}
           `;
           results.push(videoCard);
-          return;
-        }
-      }
-
-      if (tag === 'audio' || node.classList?.contains('wp-block-audio') || node.classList?.contains('audio-player')) {
-        const audioEl = tag === 'audio' ? node : node.querySelector('audio');
-        const audioSrc = audioEl?.getAttribute('src') || audioEl?.querySelector('source')?.getAttribute('src') || '';
-        const audioTitle = node.textContent.trim() || 'Zvuková nahrávka';
-
-        if (audioSrc) {
-          const card = document.createElement('div');
-          card.className = 'doc-callout doc-qr-card doc-element';
-          card.setAttribute('data-block-type', 'qr-card');
-          card.setAttribute('data-href', audioSrc);
-          const svg = QRGenerator.generateSVG(audioSrc);
-          card.innerHTML = `
-            <div class="doc-qr-canvas-wrapper">${svg}</div>
-            <div class="doc-qr-info">
-              <span class="doc-qr-badge">🎧 Zvuková ukázka</span>
-              <div class="doc-qr-title">${this._escapeHTML(audioTitle)}</div>
-              <div class="doc-qr-url">${this._escapeHTML(audioSrc)}</div>
-            </div>
-          `;
-          results.push(card);
           return;
         }
       }
@@ -997,6 +1522,15 @@
           img.removeAttribute('srcset');
         });
 
+        tbl.querySelectorAll('a[href]').forEach(a => {
+          const href = a.getAttribute('href');
+          if (href && !/^(?:https?:|mailto:|tel:|javascript:|#|data:)/i.test(href) && baseUrl) {
+            try {
+              a.setAttribute('href', new URL(href, baseUrl).href);
+            } catch (e) {}
+          }
+        });
+
         // Preserve table cell styles (background, text color, alignment, borders)
         const originalCells = Array.from(node.querySelectorAll('th, td'));
         const clonedCells = Array.from(tbl.querySelectorAll('th, td'));
@@ -1034,6 +1568,15 @@
             img.setAttribute('loading', 'lazy');
           });
 
+          tbl.querySelectorAll('a[href]').forEach(a => {
+            const href = a.getAttribute('href');
+            if (href && !/^(?:https?:|mailto:|tel:|javascript:|#|data:)/i.test(href) && baseUrl) {
+              try {
+                a.setAttribute('href', new URL(href, baseUrl).href);
+              } catch (e) {}
+            }
+          });
+
           const figcaption = node.querySelector('figcaption');
           const figWrapper = document.createElement('figure');
           figWrapper.className = 'doc-element doc-table-figure';
@@ -1064,6 +1607,16 @@
 
       if (tag === 'p') {
         const text = node.textContent.trim();
+        const textLower = text.toLowerCase();
+
+        // Skip audio player controls and social sharing paragraphs
+        if (/^(?:poslechněte si článek|poslechnout článek|poslechnout audio|přehrát audio|play audio|sdílet článek|share this article|sdílet na|sdílet:|share:|audio verze:|délka audia:)/i.test(textLower)) {
+          return;
+        }
+        if (text.length < 35 && (node.querySelector('a[href*="facebook.com"], a[href*="twitter.com"], a[href*="linkedin.com"], a[href*="instagram.com"]') || textLower.includes('sdílet') || textLower.includes('share'))) {
+          return;
+        }
+
         const img = node.querySelector('img');
         if (img) {
           const fig = this._createFigureFromImg(img, baseUrl);
@@ -1071,11 +1624,17 @@
         }
         if (text && !/^(?:Title|URL Source|Published Time|Markdown Content|Image Sources?):\s*/i.test(text)) {
           if (!/^(?:Domů|Home|Úvod)\s*(\/|>|»|›|\|)/i.test(text)) {
-            const p = document.createElement('p');
-            p.className = 'doc-element';
-            p.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
-            this._preserveElementStyles(p, node);
-            results.push(p);
+            // Avoid duplicating the image inside the paragraph
+            const pClone = node.cloneNode(true);
+            pClone.querySelectorAll('img').forEach(im => im.remove());
+            const cleanHtml = this._cleanInlineContent(pClone.innerHTML, baseUrl);
+            if (cleanHtml.replace(/<[^>]*>/g, '').trim()) {
+              const p = document.createElement('p');
+              p.className = 'doc-element';
+              p.innerHTML = cleanHtml;
+              this._preserveElementStyles(p, node);
+              results.push(p);
+            }
           }
         }
         return;
@@ -1133,20 +1692,45 @@
         return;
       }
 
-      const children = Array.from(node.children);
-      if (children.length > 0) {
-        children.forEach(child => {
+      // Check if container has direct text and all child elements are inline (e.g. bold, link, br)
+      const inlineTags = new Set(['a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'dfn', 'em', 'i', 'kbd', 'mark', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr']);
+      const childElements = Array.from(node.children);
+      const hasDirectText = Array.from(node.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().length > 0);
+      const allChildrenInline = childElements.length > 0 && childElements.every(c => inlineTags.has(c.tagName.toLowerCase()));
+
+      if (hasDirectText && allChildrenInline) {
+        const text = node.textContent.trim();
+        if (text && text.length > 3 && !/^(?:Title|URL Source|Published Time|Markdown Content|Image Sources?):\s*/i.test(text)) {
+          if (!/^(?:Domů|Home|Úvod)\s*(\/|>|»|›|\|)/i.test(text)) {
+            const cleanHtml = this._cleanInlineContent(node.innerHTML, baseUrl);
+            if (cleanHtml.replace(/<[^>]*>/g, '').trim()) {
+              const p = document.createElement('p');
+              p.className = 'doc-element';
+              p.innerHTML = cleanHtml;
+              this._preserveElementStyles(p, node);
+              results.push(p);
+              return;
+            }
+          }
+        }
+      }
+
+      if (childElements.length > 0) {
+        childElements.forEach(child => {
           this._flattenDomBlocks(child, results, preserveStyles, baseUrl);
         });
       } else {
         const text = node.textContent.trim();
         if (text && text.length > 3 && !/^(?:Title|URL Source|Published Time|Markdown Content|Image Sources?):\s*/i.test(text)) {
           if (!/^(?:Domů|Home|Úvod)\s*(\/|>|»|›|\|)/i.test(text)) {
-            const p = document.createElement('p');
-            p.className = 'doc-element';
-            p.innerHTML = this._cleanInlineContent(node.innerHTML, baseUrl);
-            this._preserveElementStyles(p, node);
-            results.push(p);
+            const cleanHtml = this._cleanInlineContent(node.innerHTML, baseUrl);
+            if (cleanHtml.replace(/<[^>]*>/g, '').trim()) {
+              const p = document.createElement('p');
+              p.className = 'doc-element';
+              p.innerHTML = cleanHtml;
+              this._preserveElementStyles(p, node);
+              results.push(p);
+            }
           }
         }
       }
@@ -1177,9 +1761,44 @@
     }
 
     static _cleanInlineContent(html, baseUrl) {
-      let s = html || '';
+      if (!html) return '';
+      let s = html;
       s = s.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      s = s.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+      s = s.replace(/<button\b[^<]*(?:(?!<\/button>)<[^<]*)*<\/button>/gi, '');
+      s = s.replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, '');
+      s = s.replace(/<input\b[^>]*>/gi, '');
+      s = s.replace(/<select\b[^<]*(?:(?!<\/select>)<[^<]*)*<\/select>/gi, '');
+      s = s.replace(/<textarea\b[^<]*(?:(?!<\/textarea>)<[^<]*)*<\/textarea>/gi, '');
+      s = s.replace(/<a\b[^>]*href=["'][^"']*(?:facebook\.com\/sharer|twitter\.com\/intent|linkedin\.com\/share|pinterest\.com\/pin|t\.me\/share|api\.whatsapp\.com|reddit\.com\/submit)[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, '');
       s = s.replace(/on\w+="[^"]*"/g, '');
+      s = s.replace(/<a\b[^>]*>\s*<\/a>/gi, '');
+
+      // Resolve relative URLs in links and images to absolute URLs
+      if (baseUrl) {
+        try {
+          const temp = document.createElement('div');
+          temp.innerHTML = s;
+          temp.querySelectorAll('a[href]').forEach(a => {
+            const href = a.getAttribute('href');
+            if (href && !/^(?:https?:|mailto:|tel:|javascript:|#|data:)/i.test(href)) {
+              try {
+                a.setAttribute('href', new URL(href, baseUrl).href);
+              } catch (e) {}
+            }
+          });
+          temp.querySelectorAll('img[src]').forEach(im => {
+            const src = im.getAttribute('src');
+            if (src && !/^(?:https?:|data:)/i.test(src)) {
+              try {
+                im.setAttribute('src', new URL(src, baseUrl).href);
+              } catch (e) {}
+            }
+          });
+          s = temp.innerHTML;
+        } catch (e) {}
+      }
+
       return s;
     }
 
@@ -1215,31 +1834,137 @@
       });
     }
 
-    static _resolveCssValue(val, cssVars) {
-      if (!val) return '';
+    static _resolveCssValue(val, cssVars, depth = 0) {
+      if (!val || depth > 8) return '';
       let str = val.trim();
+      
+      // Strip !important comments
+      str = str.replace(/!important/gi, '').trim();
+
+      // Resolve var(--var-name, fallback)
       const varMatch = str.match(/var\(\s*(--[a-zA-Z0-9_-]+)(?:\s*,\s*([^)]+))?\s*\)/i);
       if (varMatch) {
         const varName = varMatch[1];
         const fallback = varMatch[2] ? varMatch[2].trim() : '';
         if (cssVars && cssVars.has(varName)) {
-          return this._resolveCssValue(cssVars.get(varName), cssVars);
+          const resolved = this._resolveCssValue(cssVars.get(varName), cssVars, depth + 1);
+          str = str.replace(varMatch[0], resolved);
+          return this._resolveCssValue(str, cssVars, depth + 1);
         }
         if (fallback) {
-          return this._resolveCssValue(fallback, cssVars);
+          const resolved = this._resolveCssValue(fallback, cssVars, depth + 1);
+          str = str.replace(varMatch[0], resolved);
+          return this._resolveCssValue(str, cssVars, depth + 1);
         }
       }
       return str;
     }
 
-    static _extractWebTokens(doc, sourceUrl = '') {
-      try {
-        const isWikipedia = sourceUrl.includes('wikipedia.org') || !!doc.querySelector('.mw-parser-output');
-        const isSaxoskola = sourceUrl.includes('saxoskola.cz');
+    static _extractWebTokens(doc, sourceUrl = '', articleContext = null) {
+      if (!doc) return this._deriveTokensFromHostOrFallback(sourceUrl);
 
-        // 1. Collect all CSS custom properties (variables) from <style> tags
+      const isWikipedia = sourceUrl.includes('wikipedia.org');
+
+      try {
+        let computedH1 = null;
+        let computedH2 = null;
+        let computedH3 = null;
+        let computedH4 = null;
+        let computedP = null;
+        let computedLead = null;
+        let computedLink = null;
+        let computedHeader = null;
+
+        // Sandboxed DOM styling engine
+        let iframeDoc = null;
+        let iframeWin = null;
+        if (typeof document !== 'undefined' && document.body) {
+          try {
+            let sandboxFrame = document.getElementById('url-printer-style-sandbox');
+            if (!sandboxFrame) {
+              sandboxFrame = document.createElement('iframe');
+              sandboxFrame.id = 'url-printer-style-sandbox';
+              sandboxFrame.setAttribute('sandbox', 'allow-same-origin');
+              sandboxFrame.style.cssText = 'position:absolute;width:1200px;height:900px;top:-9999px;left:-9999px;visibility:hidden;border:none;';
+              document.body.appendChild(sandboxFrame);
+            }
+            iframeWin = sandboxFrame.contentWindow;
+            iframeDoc = sandboxFrame.contentDocument || sandboxFrame.contentWindow?.document;
+            if (iframeDoc) {
+              const docClone = doc.cloneNode(true);
+              // Strip executable scripts and reload meta tags so third-party code never runs
+              docClone.querySelectorAll('script, noscript, meta[http-equiv="refresh"], iframe, object, embed').forEach(el => el.remove());
+              if (sourceUrl) {
+                let baseTag = docClone.querySelector('base');
+                if (!baseTag) {
+                  baseTag = docClone.createElement('base');
+                  if (docClone.head) docClone.head.insertBefore(baseTag, docClone.head.firstChild);
+                }
+                baseTag.setAttribute('href', sourceUrl);
+              }
+              iframeDoc.open();
+              iframeDoc.write(docClone.documentElement.outerHTML);
+              iframeDoc.close();
+            }
+          } catch (e) {
+            console.warn('Sandbox iframe initialization:', e);
+          }
+        }
+
+        const docToQuery = iframeDoc || doc;
+
+        // Clean CMP / Cookie Banners without removing main document containers
+        const cookieSelectors = [
+          '#didomi-popup', '#didomi-notice', '#onetrust-banner-sdk', '#onetrust-consent-sdk',
+          '.sp_message_container', '#sp_message_container', '#CybotCookiebotDialog',
+          '.fc-consent-root', '.qc-cmp2-container', '.cc-window',
+          '[aria-modal="true"]', '.cookie-banner', '.cookie-consent', '.popup', '.modal'
+        ];
+        cookieSelectors.forEach(sel => {
+          try {
+            docToQuery.querySelectorAll(sel).forEach(el => {
+              if (el !== docToQuery.body && el !== docToQuery.documentElement) {
+                el.remove();
+              }
+            });
+          } catch (e) {}
+        });
+
+        // CONTENT-COUPLED ELEMENT IDENTIFICATION (Probed directly without fragile class concatenation)
+        let h1El = docToQuery.querySelector('[data-up-probe="h1"]') ||
+                   docToQuery.querySelector('article h1, main h1, [itemprop="headline"], .c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], h1');
+
+        let pEl = docToQuery.querySelector('[data-up-probe="p"]') ||
+                  docToQuery.querySelector('.c-article-body p, .article__content p, .article__body p, .core-container p, .body-content p, [data-dot="mol-article-content"] p, .mol-article-content p, .mol-paragraph, .paragraph, .story-body p, .articleNewDetail__content p, .e-web-aktualne-articles-show-body p, .entry-content p, .article-body p, .article-content p, [itemprop="articleBody"] p, article p, main p, .content p, p');
+
+        let h2El = docToQuery.querySelector('[data-up-probe="h2"]') ||
+                   docToQuery.querySelector('article h2, main h2, [itemprop="articleBody"] h2, .entry-content h2, h2');
+        let h3El = docToQuery.querySelector('article h3, main h3, [itemprop="articleBody"] h3, .entry-content h3, h3');
+        let h4El = docToQuery.querySelector('article h4, main h4, [itemprop="articleBody"] h4, .entry-content h4, h4');
+        let leadEl = docToQuery.querySelector('.lead, .perex, .c-article-teaser, .article-lead, .intro, p.lead');
+        let aEl = docToQuery.querySelector('[data-up-probe="a"]') ||
+                  docToQuery.querySelector('article p a, main p a, p a, a');
+        let headerEl = docToQuery.querySelector('header, .site-header, .navbar, nav');
+
+        if (iframeWin) {
+          try {
+            if (h1El) computedH1 = iframeWin.getComputedStyle(h1El);
+            if (h2El) computedH2 = iframeWin.getComputedStyle(h2El);
+            if (h3El) computedH3 = iframeWin.getComputedStyle(h3El);
+            if (h4El) computedH4 = iframeWin.getComputedStyle(h4El);
+            if (pEl) computedP = iframeWin.getComputedStyle(pEl);
+            if (leadEl) computedLead = iframeWin.getComputedStyle(leadEl);
+            if (aEl) computedLink = iframeWin.getComputedStyle(aEl);
+            if (headerEl) computedHeader = iframeWin.getComputedStyle(headerEl);
+          } catch (e) {
+            console.warn('Error reading getComputedStyle from sandbox iframe:', e);
+          }
+        }
+
+        // 1. UNIVERSAL CSS VARIABLE MAP COLLECTION
         const cssVars = new Map();
         const styleTags = Array.from(doc.querySelectorAll('style'));
+        
         styleTags.forEach(s => {
           const text = s.textContent || '';
           const declMatches = text.matchAll(/(--[a-zA-Z0-9_-]+)\s*:\s*([^;!}\n]+)/gi);
@@ -1248,6 +1973,7 @@
           }
         });
 
+        // 2. CANDIDATE BRAND COLOR SCORING ENGINE
         const colorScores = new Map();
         const addColorScore = (rawColor, weight = 1) => {
           if (!rawColor) return;
@@ -1258,306 +1984,731 @@
           const hsl = this._hexToHSL(hex);
           if (!hsl) return;
 
-          // Must have color saturation (>= 15%) and balanced lightness (10% <= L <= 82%)
-          if (hsl.s < 0.15 || hsl.l < 0.10 || hsl.l > 0.82) return;
+          // Exclude near-black, pure white or ultra-desaturated gray from brand scoring
+          if (hsl.s < 0.12 || hsl.l < 0.08 || hsl.l > 0.85) return;
 
           const current = colorScores.get(hex) || 0;
           colorScores.set(hex, current + weight);
         };
 
-        // 2. Check meta tags
-        const metaColor = doc.querySelector('meta[name="theme-color"], meta[property="og:theme_color"], meta[name="msapplication-TileColor"], meta[name="msapplication-navbutton-color"]');
-        if (metaColor && metaColor.getAttribute('content')) {
-          addColorScore(metaColor.getAttribute('content'), 20);
+        // A. Scan <meta> theme colors (highest priority intent for brand accent)
+        const metaColors = doc.querySelectorAll('meta[name="theme-color"], meta[property="og:theme_color"], meta[name="msapplication-TileColor"], meta[name="msapplication-navbutton-color"], meta[name="apple-mobile-web-app-status-bar-style"]');
+        metaColors.forEach(m => {
+          const c = m.getAttribute('content');
+          if (c) addColorScore(c, 40);
+        });
+
+        // B. Scan Universal Framework CSS Variables
+        cssVars.forEach((val, vn) => {
+          if (/brand|theme|primary|accent|color-0|palette1|palette-1|vp-c-brand|ifm-color-primary|ghost-accent/i.test(vn)) {
+            addColorScore(val, 35);
+          } else if (/palette[2-3]|color-1|color-2|color-primary/i.test(vn)) {
+            addColorScore(val, 20);
+          }
+        });
+
+        // C. Header / Navbar computed color
+        if (computedHeader?.backgroundColor) {
+          addColorScore(computedHeader.backgroundColor, 25);
+        }
+        if (computedLink?.color) {
+          addColorScore(computedLink.color, 15);
         }
 
-        // 3. Scan CSS variables and style rules in <style>
-        cssVars.forEach((rawVal, varName) => {
-          if (/(?:palette[1-3]|primary|brand|accent|theme|heading|main)/i.test(varName)) {
-            addColorScore(rawVal, 20);
-          }
-        });
-
-        styleTags.forEach(s => {
-          const text = s.textContent || '';
-          const headingRules = text.matchAll(/(?:h[1-3]|\.entry-title|\.site-header|header|\.navbar|\.nav-link|\.btn-primary|\.wp-block-button)\s*\{[^}]*?(?:color|background(?:-color)?|border-color)\s*:\s*([^;!}\n]+)/gi);
-          for (const m of headingRules) {
-            addColorScore(m[1], 10);
-          }
-
-          const generalMatches = text.matchAll(/(?:color|background(?:-color)?|border-color)\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]+\))/gi);
-          for (const m of generalMatches) {
-            addColorScore(m[1], 1);
-          }
-        });
-
-        // 4. Scan inline style attributes
-        doc.querySelectorAll('header, nav, h1, h2, h3, .navbar, .header, a, button, [class*="accent"], [class*="brand"]').forEach(el => {
-          const style = el.getAttribute('style') || '';
-          const inlineMatches = style.matchAll(/(?:color|background(?:-color)?|border-color)\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]+\))/gi);
-          for (const m of inlineMatches) {
-            addColorScore(m[1], 4);
-          }
-        });
-
-        // Find highest scoring brand color
-        let bestBrandColor = isWikipedia ? '#3366cc' : (isSaxoskola ? '#2a4861' : '#0ea5e9');
+        // Determine best brand color
+        let bestBrandColor = isWikipedia ? '#3366cc' : '#0284c7';
         let highestScore = 0;
 
-        if (!isWikipedia) {
-          for (const [color, score] of colorScores.entries()) {
-            if (score > highestScore) {
-              highestScore = score;
-              bestBrandColor = color;
-            }
+        for (const [color, score] of colorScores.entries()) {
+          if (score > highestScore) {
+            highestScore = score;
+            bestBrandColor = color;
           }
         }
 
-        // Generate matching pastel background and border tints
-        const hsl = this._hexToHSL(bestBrandColor) || { h: 210, s: 0.6, l: 0.4 };
-        const lightBg = isWikipedia ? '#f8f9fa' : this._hslToHex(hsl.h, Math.min(hsl.s, 0.35), 0.97);
-        const lightBorder = isWikipedia ? '#a2a9b1' : this._hslToHex(hsl.h, Math.min(hsl.s, 0.45), 0.85);
-        const secondaryColor = isWikipedia ? '#202122' : this._hslToHex((hsl.h + 25) % 360, Math.min(hsl.s * 1.1, 0.9), Math.max(hsl.l * 0.85, 0.2));
-        const headingColor = isWikipedia ? '#000000' : bestBrandColor;
+        // Generate harmonious pastel backgrounds and border tints
+        const brandHsl = this._hexToHSL(bestBrandColor) || { h: 210, s: 0.6, l: 0.4 };
+        const lightBg = isWikipedia ? '#f8f9fa' : this._hslToHex(brandHsl.h, Math.min(brandHsl.s, 0.28), 0.97);
+        const lightBorder = isWikipedia ? '#a2a9b1' : this._hslToHex(brandHsl.h, Math.min(brandHsl.s, 0.38), 0.86);
+        const secondaryColor = isWikipedia ? '#202122' : this._hslToHex((brandHsl.h + 25) % 360, Math.min(brandHsl.s * 1.1, 0.9), Math.max(brandHsl.l * 0.85, 0.22));
 
-        // 5. WEB FONTS & TYPOGRAPHY EXTRACTION
-        let extractedFont = isWikipedia ? '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Lato, Helvetica, Arial, sans-serif' : '';
-        let extractedHeadingFont = isWikipedia ? 'Linux Libertine' : '';
+        // =========================================================================
+        // 3. UNIVERSAL CONTENT-COUPLED TYPOGRAPHY EXTRACTION
+        // =========================================================================
+        let extractedFont = '';
+        let extractedHeadingFont = '';
+        let extractedH4Font = '';
 
-        // Check Google Font links
-        const fontLinks = Array.from(doc.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'));
-        fontLinks.forEach(link => {
-          const href = link.getAttribute('href') || '';
-          if (href) {
-            const match = href.match(/family=([^:&]+)/i);
-            if (match && match[1]) {
-              const rawName = decodeURIComponent(match[1]).replace(/\+/g, ' ');
-              if (!extractedFont && !isWikipedia) extractedFont = rawName.split(':')[0].trim();
-              else if (!extractedHeadingFont && !isWikipedia) extractedHeadingFont = rawName.split(':')[0].trim();
-            }
-          }
-        });
+        if (computedH1?.fontFamily) extractedHeadingFont = this._cleanFontFamilyString(computedH1.fontFamily);
+        if (computedH4?.fontFamily) {
+          const h4f = this._cleanFontFamilyString(computedH4.fontFamily);
+          if (h4f && h4f !== extractedHeadingFont) extractedH4Font = h4f;
+        }
+        if (computedP?.fontFamily) extractedFont = this._cleanFontFamilyString(computedP.fontFamily);
 
-        // Scan font-family in CSS variables and rules
-        if (!isWikipedia) {
-          if (cssVars.has('--global-heading-font-family')) {
-            extractedHeadingFont = cssVars.get('--global-heading-font-family').replace(/['"]/g, '').split(',')[0].trim();
-          }
-          if (cssVars.has('--global-body-font-family')) {
-            extractedFont = cssVars.get('--global-body-font-family').replace(/['"]/g, '').split(',')[0].trim();
-          }
+        const isGenericOrMissing = (fontStr) => {
+          if (!fontStr) return true;
+          const clean = fontStr.replace(/['",]/g, '').trim().toLowerCase();
+          if (/^[\d.]+(?:rem|em|px|%|pt|vw|vh)$/i.test(clean) || /^\d+$/.test(clean)) return true;
+          const generics = ['arial', 'times new roman', 'times', 'serif', 'sans-serif', 'monospace', 'system-ui', '-apple-system', 'blinkmacsystemfont', 'inherit', 'initial', 'unset', 'roboto'];
+          if (generics.some(g => clean === g || clean.startsWith(g + ',') || clean.endsWith(',' + g))) return true;
+          const words = clean.split(/\s+/).filter(Boolean);
+          const genericWords = ['times', 'new', 'roman', 'arial', 'helvetica', 'serif', 'sans', 'monospace', 'system', 'ui', 'apple', 'blinkmacsystemfont', 'inherit', 'initial', 'unset', 'roboto'];
+          return words.length === 0 || words.every(w => genericWords.includes(w));
+        };
 
+        if (isWikipedia) {
+          extractedFont = 'sans-serif';
+          extractedHeadingFont = 'Linux Libertine';
+        } else {
+
+          // Harvest all @font-face definitions declared in document
+          const declaredFontFaces = [];
           styleTags.forEach(s => {
             const text = s.textContent || '';
-            if (!extractedHeadingFont) {
-              const mHead = text.match(/(?:h1|h2|h3|\.entry-title)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/i);
-              if (mHead && mHead[1]) {
-                const resolved = this._resolveCssValue(mHead[1], cssVars).replace(/['"]/g, '').split(',')[0].trim();
-                if (!['inherit', 'initial', 'sans-serif', 'serif', 'monospace', 'system-ui'].includes(resolved.toLowerCase())) {
+            const ffMatches = text.matchAll(/@font-face\s*\{[^}]*font-family\s*:\s*['"]?([^'";}\n]+)['"]?/gi);
+            for (const m of ffMatches) {
+              const ffName = this._cleanFontFamilyString(m[1]);
+              if (ffName && !isGenericOrMissing(ffName) && !declaredFontFaces.includes(ffName)) {
+                declaredFontFaces.push(ffName);
+              }
+            }
+          });
+
+          // Build exact selector inventory from the identified article nodes
+          const articlePSelectors = [];
+          if (pEl) {
+            if (pEl.tagName) articlePSelectors.push(pEl.tagName.toLowerCase());
+            if (pEl.className) {
+              pEl.className.split(/\s+/).forEach(c => {
+                if (c && !c.startsWith('__')) articlePSelectors.push('.' + c);
+              });
+            }
+            let curr = pEl.parentElement;
+            let depth = 0;
+            while (curr && curr !== doc.body && depth < 4) {
+              if (curr.className) {
+                curr.className.split(/\s+/).forEach(c => {
+                  if (c && !c.startsWith('__')) {
+                    articlePSelectors.push('.' + c + ' p');
+                    articlePSelectors.push('.' + c);
+                  }
+                });
+              }
+              curr = curr.parentElement;
+              depth++;
+            }
+          }
+
+          const articleHeadSelectors = [];
+          if (h1El) {
+            if (h1El.tagName) articleHeadSelectors.push(h1El.tagName.toLowerCase());
+            if (h1El.className) {
+              h1El.className.split(/\s+/).forEach(c => {
+                if (c && !c.startsWith('__')) articleHeadSelectors.push('.' + c);
+              });
+            }
+            let curr = h1El.parentElement;
+            let depth = 0;
+            while (curr && curr !== doc.body && depth < 3) {
+              if (curr.className) {
+                curr.className.split(/\s+/).forEach(c => {
+                  if (c && !c.startsWith('__')) {
+                    articleHeadSelectors.push('.' + c + ' h1');
+                    articleHeadSelectors.push('.' + c + ' .headline');
+                  }
+                });
+              }
+              curr = curr.parentElement;
+              depth++;
+            }
+          }
+
+          // Scan style rules targeting specific article selectors
+          if (isGenericOrMissing(extractedHeadingFont) || isGenericOrMissing(extractedFont)) {
+            styleTags.forEach(s => {
+              const text = s.textContent || '';
+              
+              // Article Heading Rules
+              for (const sel of articleHeadSelectors) {
+                const escaped = sel.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+                const regex = new RegExp('(?:^|[,\\s\\}])(' + escaped + ')[^{]*\\{([^}]+)\\}', 'gi');
+                for (const match of text.matchAll(regex)) {
+                  const block = match[2];
+                  const fontMatch = block.match(/font-family\s*:\s*([^;!}\n]+)/i);
+                  if (fontMatch) {
+                    const resolved = this._cleanFontFamilyString(this._resolveCssValue(fontMatch[1], cssVars));
+                    if (resolved && !isGenericOrMissing(resolved) && isGenericOrMissing(extractedHeadingFont)) {
+                      extractedHeadingFont = resolved;
+                    }
+                  }
+                }
+              }
+
+              // Article Paragraph Rules
+              for (const sel of articlePSelectors) {
+                const escaped = sel.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+                const regex = new RegExp('(?:^|[,\\s\\}])(' + escaped + ')[^{]*\\{([^}]+)\\}', 'gi');
+                for (const match of text.matchAll(regex)) {
+                  const block = match[2];
+                  const fontMatch = block.match(/font-family\s*:\s*([^;!}\n]+)/i);
+                  if (fontMatch) {
+                    const resolved = this._cleanFontFamilyString(this._resolveCssValue(fontMatch[1], cssVars));
+                    if (resolved && !isGenericOrMissing(resolved) && isGenericOrMissing(extractedFont)) {
+                      extractedFont = resolved;
+                    }
+                  }
+                }
+              }
+            });
+          }
+
+          // Scan CSS Custom Properties specifically for typography tokens (including --font-family-martel, etc.)
+          if (isGenericOrMissing(extractedHeadingFont) || isGenericOrMissing(extractedFont)) {
+            const resolvedVars = [];
+            cssVars.forEach((val, varName) => {
+              const lowerVar = varName.toLowerCase();
+              if (lowerVar.includes('size') || lowerVar.includes('weight') || lowerVar.includes('height') || lowerVar.includes('spacing') || lowerVar.includes('color')) return;
+              let resolved = this._cleanFontFamilyString(this._resolveCssValue(val, cssVars));
+              if (!resolved && declaredFontFaces.length > 0) {
+                const match = declaredFontFaces.find(df => lowerVar.includes(df.toLowerCase()));
+                if (match) resolved = match;
+              }
+              if (resolved && !isGenericOrMissing(resolved)) {
+                resolvedVars.push({ varName, lowerVar, resolved });
+              }
+            });
+
+            // Pass 1: Explicit Heading tokens
+            for (const { lowerVar, resolved } of resolvedVars) {
+              if (isGenericOrMissing(extractedHeadingFont)) {
+                if (/font.*(?:head|title|h1|display|brand-heading)|(?:head|title|h1|display|brand-heading).*font/i.test(lowerVar)) {
                   extractedHeadingFont = resolved;
                 }
               }
             }
-            if (!extractedFont) {
-              const mBody = text.match(/(?:body|\.entry-content|p)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/i);
-              if (mBody && mBody[1]) {
-                const resolved = this._resolveCssValue(mBody[1], cssVars).replace(/['"]/g, '').split(',')[0].trim();
-                if (!['inherit', 'initial', 'sans-serif', 'serif', 'monospace', 'system-ui'].includes(resolved.toLowerCase())) {
+
+            // Pass 2: Explicit Body / Text / Sans tokens
+            for (const { lowerVar, resolved } of resolvedVars) {
+              if (isGenericOrMissing(extractedFont)) {
+                if (/font.*(?:body|sans|base|text|main|para|content)|(?:body|sans|base|text|main|para|content).*font/i.test(lowerVar)) {
                   extractedFont = resolved;
+                }
+              }
+            }
+
+            // Pass 3: Brand Archetypes (polysans, martel, lora, etc.)
+            for (const { lowerVar, resolved } of resolvedVars) {
+              const rLower = resolved.toLowerCase();
+              if (lowerVar.includes('polysans') || rLower.includes('polysans')) {
+                if (isGenericOrMissing(extractedHeadingFont)) extractedHeadingFont = resolved;
+                if (isGenericOrMissing(extractedFont)) extractedFont = resolved;
+              }
+              if (lowerVar.includes('martel') || rLower.includes('martel')) {
+                if (isGenericOrMissing(extractedHeadingFont)) extractedHeadingFont = resolved;
+              }
+            }
+
+            // Pass 4: Fallback for any remaining --font-* without mono
+            for (const { lowerVar, resolved } of resolvedVars) {
+              if (lowerVar.startsWith('--font-') || lowerVar.includes('font-family')) {
+                if (isGenericOrMissing(extractedHeadingFont) && !lowerVar.includes('mono')) extractedHeadingFont = resolved;
+                if (isGenericOrMissing(extractedFont) && !lowerVar.includes('mono')) extractedFont = resolved;
+              }
+            }
+          }
+
+          if (isGenericOrMissing(extractedHeadingFont) || isGenericOrMissing(extractedFont)) {
+            // Secondary CSS rule scanning fallback
+            styleTags.forEach(s => {
+              const text = s.textContent || '';
+              
+              const allH4Matches = text.matchAll(/(?:h4|\.entry-content[\s>]+h4)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
+              for (const m of allH4Matches) {
+                const res = this._cleanFontFamilyString(this._resolveCssValue(m[1], cssVars));
+                if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedH4Font)) extractedH4Font = res;
+              }
+
+              const allHeadMatches = text.matchAll(/(?:\.c-article-title|\.article__heading|\.mol-article-header__title|\.entry-title|\.articleNewDetail__title|\.e-web-aktualne-articles-show__title|\.post-title|\.article-title|\.page-title|h1)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
+              for (const m of allHeadMatches) {
+                const res = this._cleanFontFamilyString(this._resolveCssValue(m[1], cssVars));
+                if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedHeadingFont)) extractedHeadingFont = res;
+              }
+
+              const allBodyMatches = text.matchAll(/(?:\.c-article-body(?:[\s>]+p)?|\.article__content(?:[\s>]+p)?|\.article__body(?:[\s>]+p)?|\.core-container(?:[\s>]+p)?|body|\.mol-article-content(?:[\s>]+p)?|\.articleNewDetail__content(?:[\s>]+p)?|\.e-web-aktualne-articles-show-body(?:[\s>]+p)?|\.entry-content[\s>]+p|\.post-content[\s>]+p|article[\s>]+p|main[\s>]+p|\.doc-content[\s>]+p)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
+              for (const m of allBodyMatches) {
+                const res = this._cleanFontFamilyString(this._resolveCssValue(m[1], cssVars));
+                if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedFont)) extractedFont = res;
+              }
+            });
+          }
+
+          // Prioritize declared custom @font-face families if computed style was generic
+          if (declaredFontFaces.length > 0) {
+            if (isGenericOrMissing(extractedHeadingFont)) {
+              extractedHeadingFont = declaredFontFaces[0];
+            }
+            if (isGenericOrMissing(extractedFont)) {
+              extractedFont = declaredFontFaces.length > 1 ? declaredFontFaces[1] : declaredFontFaces[0];
+            }
+          }
+
+          // Google Fonts link resolution
+          const fontLinks = Array.from(doc.querySelectorAll('link[rel*="stylesheet"][href*="fonts.googleapis.com"], link[rel*="stylesheet"][href*="fonts.bunny.net"], link[rel*="stylesheet"][href*="use.typekit.net"]'));
+          const foundFamilies = [];
+          const processFontHref = (rawHref) => {
+            if (!rawHref || !rawHref.includes('family=')) return;
+            let href = rawHref.replace(/&#038;/g, '&').replace(/&amp;/g, '&');
+            const qIdx = href.indexOf('?');
+            if (qIdx === -1) return;
+            const queryString = href.substring(qIdx + 1);
+
+            const params = queryString.split('&');
+            for (const p of params) {
+              if (p.startsWith('family=')) {
+                const val = p.substring(7);
+                const subFamilies = val.split('|');
+                for (const sub of subFamilies) {
+                  let name = sub.replace(/%2C/gi, '').replace(/%20/gi, ' ').replace(/\+/g, ' ').trim();
+                  name = (name.split(':@')[0] || '').split(':')[0].trim();
+                  name = decodeURIComponent(name).replace(/['"]/g, '').trim();
+                  const ignorable = ['https', 'http', 'fonts', 'googleapis', 'com', 'css', 'css2', 'bunny', 'net', 'typekit', 'use', 'display', 'subset', 'ver', 'wght', 'ital', 'opsz', 'swap', 'auto', 'block', 'fallback', 'optional'];
+                  if (name && name.length > 1 && !ignorable.includes(name.toLowerCase()) && !foundFamilies.includes(name)) {
+                    foundFamilies.push(name);
+                  }
+                }
+              }
+            }
+          };
+
+          fontLinks.forEach(link => processFontHref(link.getAttribute('href')));
+          styleTags.forEach(s => {
+            const text = s.textContent || '';
+            const importMatches = text.matchAll(/@import\s+(?:url\(['"]?|['"])(https?:\/\/[^'"]+fonts\.(?:googleapis|bunny)\.[^'"]+)(?:['"]?\)|['"])/gi);
+            for (const m of importMatches) {
+              processFontHref(m[1]);
+            }
+          });
+
+          if (foundFamilies.length > 0) {
+            foundFamilies.forEach(f => {
+              const fClean = this._cleanFontFamilyString(f);
+              if (extractedHeadingFont && extractedHeadingFont.toLowerCase().includes(fClean.toLowerCase())) {
+                extractedHeadingFont = fClean;
+              }
+              if (extractedFont && extractedFont.toLowerCase().includes(fClean.toLowerCase())) {
+                extractedFont = fClean;
+              }
+              if (extractedH4Font && extractedH4Font.toLowerCase().includes(fClean.toLowerCase())) {
+                extractedH4Font = fClean;
+              }
+            });
+
+            if (isGenericOrMissing(extractedHeadingFont) && isGenericOrMissing(extractedFont)) {
+              extractedFont = foundFamilies[0];
+              extractedHeadingFont = foundFamilies.length > 1 ? foundFamilies[1] : foundFamilies[0];
+            } else if (isGenericOrMissing(extractedHeadingFont) && !isGenericOrMissing(extractedFont)) {
+              const rem = foundFamilies.find(f => this._cleanFontFamilyString(f).toLowerCase() !== extractedFont.toLowerCase());
+              if (rem) extractedHeadingFont = this._cleanFontFamilyString(rem);
+            } else if (!isGenericOrMissing(extractedHeadingFont) && isGenericOrMissing(extractedFont)) {
+              const rem = foundFamilies.find(f => this._cleanFontFamilyString(f).toLowerCase() !== extractedHeadingFont.toLowerCase());
+              if (rem) extractedFont = this._cleanFontFamilyString(rem);
+            }
+          }
+        }
+
+        // =========================================================================
+        // 4. ELEMENT-SPECIFIC COLOR EXTRACTION (PRIMARY: GETCOMPUTEDSTYLE)
+        // =========================================================================
+        let h1Color = '';
+        let h2Color = '';
+        let h3Color = '';
+        let h4Color = '';
+        let pColor = '';
+
+        if (computedH1?.color) {
+          const c = this._normalizeColorToHex(computedH1.color);
+          if (c) h1Color = c;
+        }
+        if (computedH2?.color) {
+          const c = this._normalizeColorToHex(computedH2.color);
+          if (c) h2Color = c;
+        }
+        if (computedH3?.color) {
+          const c = this._normalizeColorToHex(computedH3.color);
+          if (c) h3Color = c;
+        }
+        if (computedH4?.color) {
+          const c = this._normalizeColorToHex(computedH4.color);
+          if (c) h4Color = c;
+        }
+        if (computedP?.color) {
+          const c = this._normalizeColorToHex(computedP.color);
+          if (c) pColor = c;
+        }
+
+        if (isWikipedia) {
+          h1Color = '#000000';
+          h2Color = '#000000';
+          h3Color = '#000000';
+          h4Color = '#000000';
+          pColor = '#202122';
+        } else if (!h1Color || !pColor) {
+          // Secondary CSS rule scanning fallback
+          styleTags.forEach(s => {
+            const text = s.textContent || '';
+
+            if (!h1Color) {
+              const allH1Matches = text.matchAll(/(?:\.entry-title|\.page-title|\.site-title|\.articleNewDetail__title|\.e-web-aktualne-articles-show__title|\.post-title|h1)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/gi);
+              for (const m of allH1Matches) {
+                const hex = this._normalizeColorToHex(this._resolveCssValue(m[1], cssVars));
+                if (hex) {
+                  const hsl = this._hexToHSL(hex);
+                  if (hsl && hsl.l <= 0.65) h1Color = hex;
+                }
+              }
+            }
+
+            if (!pColor) {
+              const allPMatches = text.matchAll(/(?:\.articleNewDetail__content(?:[\s>]+p)?|\.e-web-aktualne-articles-show-body(?:[\s>]+p)?|\.entry-content[\s>]+p|\.post-content[\s>]+p|article[\s>]+p|main[\s>]+p|body)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/gi);
+              for (const m of allPMatches) {
+                const hex = this._normalizeColorToHex(this._resolveCssValue(m[1], cssVars));
+                if (hex) {
+                  const hsl = this._hexToHSL(hex);
+                  if (hsl && (hsl.l <= 0.18 || (hsl.l <= 0.40 && hsl.s <= 0.45))) {
+                    pColor = hex;
+                  }
                 }
               }
             }
           });
         }
 
-        // Scan specific element colors from CSS with variable resolution
-        let h1Color = isWikipedia ? '#000000' : bestBrandColor;
-        let h2Color = isWikipedia ? '#000000' : bestBrandColor;
-        let h3Color = isWikipedia ? '#000000' : bestBrandColor;
-        let pColor = isWikipedia ? '#202122' : '#334155';
+        // Fallbacks for Heading Color
+        const defaultDarkHeading = (brandHsl && brandHsl.l <= 0.35 && brandHsl.s <= 0.70) ? bestBrandColor : '#1e293b';
+        if (!h1Color) h1Color = defaultDarkHeading;
+        if (!h2Color) h2Color = h1Color;
+        if (!h3Color) h3Color = h1Color;
+        if (!h4Color) h4Color = h1Color;
+        const headingColor = h1Color;
 
-        if (!isWikipedia) {
-          styleTags.forEach(s => {
-            const text = s.textContent || '';
-            const mH1 = text.match(/(?:h1|\.entry-title|\.site-title)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
-            if (mH1 && mH1[1]) {
-              const resolved = this._resolveCssValue(mH1[1], cssVars);
-              const hex = this._normalizeColorToHex(resolved);
-              if (hex) {
-                const hsl = this._hexToHSL(hex);
-                if (hsl && hsl.l <= 0.55) h1Color = hex;
-              }
-            }
+        if (!pColor) pColor = '#334155';
 
-            const mH2 = text.match(/(?:h2|\.entry-content\s+h2)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
-            if (mH2 && mH2[1]) {
-              const resolved = this._resolveCssValue(mH2[1], cssVars);
-              const hex = this._normalizeColorToHex(resolved);
-              if (hex) {
-                const hsl = this._hexToHSL(hex);
-                if (hsl && hsl.l <= 0.55) h2Color = hex;
-              }
-            }
+        const fallback = this._deriveTokensFromHostOrFallback(sourceUrl);
 
-            const mH3 = text.match(/(?:h3|\.entry-content\s+h3)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
-            if (mH3 && mH3[1]) {
-              const resolved = this._resolveCssValue(mH3[1], cssVars);
-              const hex = this._normalizeColorToHex(resolved);
-              if (hex) {
-                const hsl = this._hexToHSL(hex);
-                if (hsl && hsl.l <= 0.55) h3Color = hex;
-              }
-            }
-
-            const mP = text.match(/(?:\.entry-content\s+p|article\s+p|\.post-content\s+p|main\s+p)[^{]*\{[^}]*?color\s*:\s*([^;!}\n]+)/i);
-            if (mP && mP[1]) {
-              const resolved = this._resolveCssValue(mP[1], cssVars);
-              const hex = this._normalizeColorToHex(resolved);
-              if (hex) {
-                const hsl = this._hexToHSL(hex);
-                if (hsl && hsl.l <= 0.35) pColor = hex;
-              }
-            }
-          });
+        let finalBodyFontName = extractedFont;
+        if (isGenericOrMissing(finalBodyFontName)) {
+          finalBodyFontName = fallback.bodyFont ? fallback.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : (isWikipedia ? 'sans-serif' : 'Inter');
         }
 
-        const cleanFontName = extractedFont ? extractedFont.split(',')[0].replace(/['"]/g, '').trim() : (isWikipedia ? 'Linux Libertine' : 'Barlow');
-        const cleanHeadingFont = extractedHeadingFont ? extractedHeadingFont.split(',')[0].replace(/['"]/g, '').trim() : cleanFontName;
+        let finalHeadingFontName = extractedHeadingFont;
+        if (isGenericOrMissing(finalHeadingFontName)) {
+          finalHeadingFontName = fallback.headingFont ? fallback.headingFont.split(',')[0].replace(/['"]/g, '').trim() : (isWikipedia ? 'Linux Libertine' : finalBodyFontName);
+        }
 
-        // Ensure real fonts load via Google Fonts
+        let finalH4FontName = extractedH4Font;
+        if (isGenericOrMissing(finalH4FontName)) {
+          finalH4FontName = finalHeadingFontName;
+        }
+
+        const cleanFontName = finalBodyFontName;
+        const cleanHeadingFont = finalHeadingFontName;
+        const cleanH4Font = finalH4FontName;
+
+        // Ensure real fonts load via Google Fonts API
         this._ensureGoogleFontLoaded(cleanFontName);
         if (cleanHeadingFont !== cleanFontName) {
           this._ensureGoogleFontLoaded(cleanHeadingFont);
         }
-
-        // Apply to CSS variables on root if document is available
-        if (typeof document !== 'undefined' && document.documentElement) {
-          try {
-            document.documentElement.style.setProperty('--doc-primary', bestBrandColor);
-            document.documentElement.style.setProperty('--web-extracted-primary', bestBrandColor);
-            document.documentElement.style.setProperty('--web-extracted-bg', lightBg);
-            document.documentElement.style.setProperty('--web-extracted-border', lightBorder);
-            document.documentElement.style.setProperty('--web-extracted-secondary', secondaryColor);
-            document.documentElement.style.setProperty('--web-extracted-heading', headingColor);
-
-            if (cleanHeadingFont.toLowerCase().includes('libertine') || isWikipedia) {
-              const serifStack = '"Linux Libertine", "Libertinus Serif", "EB Garamond", "Lora", Georgia, "Times New Roman", serif';
-              document.documentElement.style.setProperty('--web-extracted-heading-font', serifStack);
-              document.documentElement.style.setProperty('--doc-font-heading', serifStack);
-            } else {
-              document.documentElement.style.setProperty('--web-extracted-heading-font', `"${cleanHeadingFont}", system-ui, sans-serif`);
-              document.documentElement.style.setProperty('--doc-font-heading', `"${cleanHeadingFont}", system-ui, sans-serif`);
-            }
-
-            document.documentElement.style.setProperty('--web-extracted-font', `"${cleanFontName}", system-ui, sans-serif`);
-            document.documentElement.style.setProperty('--doc-font-family', `"${cleanFontName}", system-ui, sans-serif`);
-            document.documentElement.style.setProperty('--web-h1-color', h1Color);
-            document.documentElement.style.setProperty('--web-h2-color', h2Color);
-            document.documentElement.style.setProperty('--web-h3-color', h3Color);
-            document.documentElement.style.setProperty('--web-p-color', pColor);
-
-            if (document.body) {
-              document.body.setAttribute('data-theme', 'web-original');
-              document.body.setAttribute('data-font', 'web-original');
-            }
-
-            const themeSelect = document.getElementById('sel-preset-template');
-            if (themeSelect) themeSelect.value = 'web-original';
-
-            const fontSelect = document.getElementById('sel-font-family');
-            if (fontSelect) fontSelect.value = 'web-original';
-
-            const brandInput = document.getElementById('input-brand-color');
-            if (brandInput) brandInput.value = bestBrandColor;
-          } catch (e) {}
+        if (cleanH4Font && cleanH4Font !== cleanHeadingFont && cleanH4Font !== cleanFontName) {
+          this._ensureGoogleFontLoaded(cleanH4Font);
         }
 
+        // 5. CONSTRUCT ROBUST CSS FONT STACKS
+        const headingStack = this._buildFontStack(cleanHeadingFont);
+        const bodyStack = this._buildFontStack(cleanFontName);
+        const h4Stack = this._buildFontStack(cleanH4Font);
+
+        const finalBrand = bestBrandColor || fallback.brandColor || '#0284c7';
+        const finalBg = lightBg || fallback.lightBg || '#f0f9ff';
+        const finalBorder = lightBorder || fallback.lightBorder || '#bae6fd';
+        const finalSecondary = secondaryColor || fallback.secondaryColor || '#0369a1';
+        const finalHeadingColor = headingColor || fallback.headingColor || finalBrand;
+        const finalH1 = h1Color || headingColor || fallback.h1Color || '#0f172a';
+        const finalH2 = h2Color || headingColor || fallback.h2Color || finalBrand;
+        const finalH3 = h3Color || headingColor || fallback.h3Color || finalSecondary;
+        const finalH4 = h4Color || headingColor || fallback.h4Color || finalSecondary;
+        const finalBodyFont = bodyStack || cleanFontName || fallback.bodyFont || 'system-ui, -apple-system, sans-serif';
+        const finalHeadingFont = headingStack || cleanHeadingFont || fallback.headingFont || finalBodyFont;
+        const finalH4Font = h4Stack || cleanH4Font || fallback.h4Font || finalHeadingFont;
+        const finalP = pColor || fallback.pColor || '#334155';
+
         const styleTokens = {
-          brandColor: bestBrandColor,
-          lightBg: lightBg,
-          lightBorder: lightBorder,
-          secondaryColor: secondaryColor,
-          headingColor: headingColor,
-          h1Color: h1Color,
-          h2Color: h2Color,
-          h3Color: h3Color,
-          pColor: pColor,
-          bodyFont: cleanFontName,
-          headingFont: cleanHeadingFont,
+          brandColor: finalBrand,
+          lightBg: finalBg,
+          lightBorder: finalBorder,
+          secondaryColor: finalSecondary,
+          headingColor: finalHeadingColor,
+          h1Color: finalH1,
+          h2Color: finalH2,
+          h3Color: finalH3,
+          h4Color: finalH4,
+          pColor: finalP,
+          bodyFont: finalBodyFont,
+          headingFont: finalHeadingFont,
+          h4Font: finalH4Font,
           sourceHost: sourceUrl ? new URL(sourceUrl, window.location.href).hostname : ''
         };
 
         return styleTokens;
       } catch (e) {
         console.warn('Error in _extractWebTokens:', e);
-        return {
-          brandColor: '#0284c7',
-          lightBg: '#f0f9ff',
-          lightBorder: '#bae6fd',
-          secondaryColor: '#0369a1',
-          headingColor: '#0f172a',
-          h1Color: '#0f172a',
-          h2Color: '#0284c7',
-          h3Color: '#0369a1',
-          pColor: '#1e293b',
-          bodyFont: 'Inter',
-          headingFont: 'Outfit',
-          sourceHost: ''
-        };
+        return this._deriveTokensFromHostOrFallback(sourceUrl);
       }
+    }
+
+    static _cleanFontFamilyString(fontFamilyStr) {
+      if (!fontFamilyStr) return '';
+      const trimmed = fontFamilyStr.trim();
+      if (!trimmed || trimmed === 'inherit' || trimmed === 'initial' || trimmed === 'unset') return '';
+      if (/^[\d.]+(?:rem|em|px|%|pt|vw|vh)$/i.test(trimmed) || /^\d+$/.test(trimmed)) return '';
+      
+      const parts = trimmed.split(',').map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      if (parts.length === 0) return '';
+
+      return parts.map(rawName => {
+        // Strip Next.js / Webpack hashed font identifiers: __polysans_9afc27 -> polysans
+        let name = rawName.replace(/^__([a-zA-Z0-9_-]+)_[a-f0-9]{4,}$/, '$1').replace(/_/g, ' ').trim();
+        const lower = name.toLowerCase();
+        if (['sans-serif', 'serif', 'monospace', 'cursive', 'fantasy', 'system-ui', '-apple-system', 'blinkmacsystemfont', 'ui-sans-serif', 'ui-serif', 'ui-monospace'].includes(lower)) {
+          return name;
+        }
+        return `"${name}"`;
+      }).join(', ');
+    }
+
+    static _buildFontStack(fontName) {
+      if (!fontName) return 'system-ui, -apple-system, sans-serif';
+      const clean = fontName.replace(/['"]/g, '').trim();
+      const lower = clean.toLowerCase();
+
+      // Check if there is a known proprietary or commercial font that needs a mapped Google Font
+      const proprietaryMap = {
+        'bbc reith': 'Lora',
+        'reith serif': 'Lora',
+        'reith sans': 'Plus Jakarta Sans',
+        'nyt-cheltenham': 'Playfair Display',
+        'nyt-imperial': 'Merriweather',
+        'guardian headline': 'Playfair Display',
+        'guardian egyptian': 'Merriweather',
+        'guardiantextsans': 'Plus Jakarta Sans',
+        'guardian text': 'Plus Jakarta Sans',
+        'publico': 'Lora',
+        'majrit': 'Playfair Display',
+        'tiempos': 'Source Serif 4',
+        'theantiquab': 'PT Serif',
+        'the antiqua': 'PT Serif',
+        'martel': 'Martel',
+        'harding': 'EB Garamond',
+        'knowledge': 'Inter',
+        'circular': 'Plus Jakarta Sans',
+        'graphik': 'Inter',
+        'proxima nova': 'Montserrat',
+        'futura': 'Outfit',
+        'neue helvetica': 'Inter',
+        'helvetica neue': 'Inter',
+        'sohne': 'Plus Jakarta Sans',
+        'polysans': 'Plus Jakarta Sans',
+        'fkromanstandard': 'Lora',
+        'fk roman standard': 'Lora',
+        'tv sans screen': 'Source Sans Pro',
+        'lumin': 'Inter',
+        'obviously': 'Outfit',
+        'mona sans': 'Inter',
+        'mona sans vf': 'Inter',
+        'linux libertine': 'Linux Libertine'
+      };
+
+      let mappedGoogleFont = '';
+      for (const [key, gFont] of Object.entries(proprietaryMap)) {
+        if (lower.includes(key)) {
+          mappedGoogleFont = gFont;
+          break;
+        }
+      }
+
+      if (fontName.includes(',')) {
+        if (mappedGoogleFont && !lower.includes(mappedGoogleFont.toLowerCase())) {
+          const firstComma = fontName.indexOf(',');
+          return fontName.substring(0, firstComma) + `, "${mappedGoogleFont}"` + fontName.substring(firstComma);
+        }
+        return fontName;
+      }
+
+      // Serif family stack
+      const serifKeywords = ['harding', 'antiqua', 'theantiquab', 'the antiqua', 'pt serif', 'martel', 'libertine', 'garamond', 'georgia', 'times', 'serif', 'lora', 'merriweather', 'playfair', 'cinzel', 'caslon', 'baskerville', 'minion', 'charter', 'cambria', 'constantia', 'cormorant', 'spectral', 'bitter', 'forum', 'cheltenham', 'imperial', 'financier', 'escrow', 'publico', 'lyon', 'guardian headline', 'guardian text', 'noto_serif', 'majrit', 'tiempos', 'sentinel', 'elena', 'faustina', 'heldane', 'spiegelserif', 'bower', 'reith', 'austin', 'sme headline'];
+      if (serifKeywords.some(k => lower.includes(k))) {
+        const fallbackG = mappedGoogleFont || 'Lora';
+        return `"${clean}", "${fallbackG}", "Merriweather", Georgia, "Times New Roman", serif`;
+      }
+
+      // Monospace family stack
+      const monoKeywords = ['mono', 'code', 'consolas', 'courier', 'menlo', 'monaco', 'inconsolata', 'cascadia'];
+      if (monoKeywords.some(k => lower.includes(k))) {
+        return `"${clean}", "JetBrains Mono", "Fira Code", Consolas, Monaco, "Courier New", monospace`;
+      }
+
+      // Modern Sans-Serif family stack
+      const fallbackSans = mappedGoogleFont || 'Plus Jakarta Sans';
+      return `"${clean}", "${fallbackSans}", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
     }
 
     static _ensureGoogleFontLoaded(fontName) {
       if (!fontName || typeof document === 'undefined' || !document.head) return;
-      const cleanName = fontName.split(',')[0].replace(/['"]/g, '').trim();
+      let cleanName = fontName.split(',')[0].replace(/['"]/g, '').trim();
+      cleanName = cleanName.replace(/-(?:EditorDashes|Regular|Bold|Light|Medium|SemiBold|ExtraBold|Black|Italic|subset|\d+)$/i, '').trim();
       const standardFonts = [
         'system-ui', 'sans-serif', 'serif', 'monospace', 'initial', 'inherit',
-        'arial', 'helvetica', 'times new roman', 'times', 'georgia', 'courier', 'courier new', 'verdana', 'tahoma', 'trebuchet ms'
+        'arial', 'helvetica', 'times new roman', 'times', 'georgia', 'courier', 'courier new', 'verdana', 'tahoma', 'trebuchet ms', 'segoe ui', 'calibri', 'cambria'
       ];
       if (standardFonts.includes(cleanName.toLowerCase())) return;
 
-      if (cleanName.toLowerCase().includes('libertine')) {
-        const linkId = 'gfont-libertine-serif';
-        if (!document.getElementById(linkId)) {
-          const link = document.createElement('link');
-          link.id = linkId;
-          link.rel = 'stylesheet';
-          link.href = 'https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600&family=Lora:ital,wght@0,400;0,600;0,700;1,400&display=swap';
-          document.head.appendChild(link);
+      const lower = cleanName.toLowerCase();
+      
+      // Known proprietary webfont fallbacks to high-grade Google Fonts
+      const proprietaryMap = {
+        'bbc reith': 'Lora',
+        'reith serif': 'Lora',
+        'reith sans': 'Plus Jakarta Sans',
+        'nyt-cheltenham': 'Playfair Display',
+        'nyt-imperial': 'Merriweather',
+        'guardian headline': 'Playfair Display',
+        'guardian egyptian': 'Merriweather',
+        'guardiantextsans': 'Plus Jakarta Sans',
+        'guardian text': 'Plus Jakarta Sans',
+        'publico': 'Lora',
+        'majrit': 'Playfair Display',
+        'tiempos': 'Source Serif 4',
+        'theantiquab': 'PT Serif',
+        'the antiqua': 'PT Serif',
+        'martel': 'Martel',
+        'harding': 'EB Garamond',
+        'knowledge': 'Inter',
+        'knowledge2017': 'Inter',
+        'circular': 'Plus Jakarta Sans',
+        'graphik': 'Inter',
+        'proxima nova': 'Montserrat',
+        'futura': 'Outfit',
+        'neue helvetica': 'Inter',
+        'helvetica neue': 'Inter',
+        'sohne': 'Plus Jakarta Sans',
+        'polysans': 'Plus Jakarta Sans',
+        'fkromanstandard': 'Lora',
+        'tv sans screen': 'Source Sans Pro',
+        'lumin': 'Inter',
+        'obviously': 'Outfit',
+        'mona sans': 'Inter'
+      };
+
+      for (const [key, gFont] of Object.entries(proprietaryMap)) {
+        if (lower.includes(key)) {
+          this._loadGoogleFontLink(gFont);
         }
-        return;
       }
 
-      const linkId = 'gfont-' + cleanName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-      if (!document.getElementById(linkId)) {
-        try {
-          const link = document.createElement('link');
-          link.id = linkId;
-          link.rel = 'stylesheet';
-          link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(cleanName)}:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,700&display=swap`;
-          document.head.appendChild(link);
-        } catch(e) {}
+      if (!cleanName.startsWith('__') && !Object.keys(proprietaryMap).some(k => lower === k || lower.startsWith(k))) {
+        this._loadGoogleFontLink(cleanName);
       }
+    }
+
+    static _loadGoogleFontLink(cleanName) {
+      if (!cleanName) return;
+      const fontId = `gfont-${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+      if (document.getElementById(fontId)) return;
+
+      try {
+        const link = document.createElement('link');
+        link.id = fontId;
+        link.rel = 'stylesheet';
+        const encoded = encodeURIComponent(cleanName).replace(/%20/g, '+');
+        link.href = `https://fonts.googleapis.com/css2?family=${encoded}:wght@400;600;700&display=swap`;
+        link.onerror = () => {
+          link.href = `https://fonts.googleapis.com/css2?family=${encoded}&display=swap`;
+        };
+        document.head.appendChild(link);
+      } catch (e) {}
     }
 
     static _normalizeColorToHex(colorStr) {
       if (!colorStr) return '';
-      const c = colorStr.trim();
-      if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)) {
-        if (c.length === 4) {
-          return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+      let c = colorStr.trim().toLowerCase();
+      c = c.replace(/!important/g, '').trim();
+
+      // 1. Hex format (#rgb, #rgba, #rrggbb, #rrggbbaa)
+      if (/^#([0-9a-f]{3,8})$/i.test(c)) {
+        const raw = c.substring(1);
+        if (raw.length === 3) {
+          return '#' + raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
         }
-        return c;
+        if (raw.length === 4) {
+          return '#' + raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
+        }
+        if (raw.length >= 6) {
+          return '#' + raw.substring(0, 6);
+        }
       }
+
+      // 2. RGB / RGBA format (comma or space separated) with authentic white paper compositing
       if (c.startsWith('rgb')) {
-        const nums = c.match(/\d+/g);
+        const nums = c.match(/[\d.]+/g);
         if (nums && nums.length >= 3) {
-          const r = parseInt(nums[0]).toString(16).padStart(2, '0');
-          const g = parseInt(nums[1]).toString(16).padStart(2, '0');
-          const b = parseInt(nums[2]).toString(16).padStart(2, '0');
+          const rawR = Math.min(255, Math.max(0, parseInt(nums[0], 10)));
+          const rawG = Math.min(255, Math.max(0, parseInt(nums[1], 10)));
+          const rawB = Math.min(255, Math.max(0, parseInt(nums[2], 10)));
+          const alpha = nums.length >= 4 ? Math.min(1, Math.max(0, parseFloat(nums[3]))) : 1.0;
+
+          // Composite foreground color over clean white paper background
+          const r = Math.round(rawR * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0');
+          const g = Math.round(rawG * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0');
+          const b = Math.round(rawB * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0');
           return `#${r}${g}${b}`;
         }
       }
+
+      // 3. HSL / HSLA format (comma or space separated)
+      if (c.startsWith('hsl')) {
+        const nums = c.match(/[\d.]+/g);
+        if (nums && nums.length >= 3) {
+          const h = parseFloat(nums[0]) || 0;
+          const s = (parseFloat(nums[1]) || 0) / 100;
+          const l = (parseFloat(nums[2]) || 0) / 100;
+          return this._hslToHex(h, s, l);
+        }
+      }
+
+      // 4. CSS Named Colors & Framework Tokens Dictionary
+      const namedColors = {
+        navy: '#000080', darkblue: '#00008b', blue: '#0000ff', royalblue: '#4169e1',
+        midnightblue: '#191970', teal: '#008080', darkcyan: '#008b8b', darkslategray: '#2f4f4f',
+        forestgreen: '#228b22', seagreen: '#2e8b57', darkgreen: '#006400', crimson: '#dc143c',
+        firebrick: '#b22222', maroon: '#800000', darkred: '#8b0000', indigo: '#4b0082',
+        purple: '#800080', darkmagenta: '#8b008b', slateblue: '#6a5acd', darkslateblue: '#483d8b',
+        steelblue: '#4682b4', dodgerblue: '#1e90ff', cadetblue: '#5f9ea0', darkolivegreen: '#556b2f',
+        sienna: '#a0522d', saddlebrown: '#8b4513', chocolate: '#d2691e', brown: '#a52a2a',
+        black: '#000000', white: '#ffffff', gray: '#808080', dimgray: '#696969', slategray: '#708090',
+        skyblue: '#87ceeb', cornflowerblue: '#6495ed', mediumseagreen: '#3cb371',
+        // Tailwind / Bootstrap common tokens
+        'blue-600': '#2563eb', 'blue-700': '#1d4ed8', 'indigo-600': '#4f46e5', 'indigo-700': '#4338ca',
+        'emerald-600': '#059669', 'emerald-700': '#047857', 'teal-600': '#0d9488', 'teal-700': '#0f766e',
+        'sky-600': '#0284c7', 'sky-700': '#0369a1', 'amber-600': '#d97706', 'amber-700': '#b45309',
+        'rose-600': '#e11d48', 'rose-700': '#be123c', 'purple-600': '#9333ea', 'purple-700': '#7e22ce',
+        'violet-600': '#7c3aed', 'slate-800': '#1e293b', 'slate-900': '#0f172a', 'zinc-800': '#27272a'
+      };
+
+      if (namedColors[c]) {
+        return namedColors[c];
+      }
+
       return '';
     }
 
@@ -1749,20 +2900,373 @@
 
       if (inList) html += `</${listType}>\n`;
 
+      // Derive authentic tokens from the domain if raw styles were not in Markdown
+      const styleTokens = this._deriveTokensFromHostOrFallback(effectiveSourceUrl);
+
       return {
         title: title || 'Nová kapitola',
         sourceUrl: effectiveSourceUrl,
         htmlContent: html,
-        styleTokens: {
+        styleTokens: styleTokens
+      };
+    }
+
+    static _deriveTokensFromHostOrFallback(sourceUrl) {
+      if (!sourceUrl) {
+        return {
           brandColor: '#0284c7',
           lightBg: '#f0f9ff',
           lightBorder: '#bae6fd',
           secondaryColor: '#0369a1',
           headingColor: '#0f172a',
+          h1Color: '#0f172a',
+          h2Color: '#0284c7',
+          h3Color: '#0369a1',
+          h4Color: '#0f172a',
+          pColor: '#1e293b',
           bodyFont: 'Inter',
           headingFont: 'Outfit',
+          h4Font: 'Outfit',
           sourceHost: ''
+        };
+      }
+
+      let host = '';
+      try {
+        host = new URL(sourceUrl, window.location.href).hostname.toLowerCase().replace(/^www\./, '');
+      } catch (e) {
+        host = (sourceUrl || '').toLowerCase();
+      }
+
+      if (typeof GlobalBenchmarkRegistry !== 'undefined' && host) {
+        const found = GlobalBenchmarkRegistry.getAll().find(b => {
+          if (!b.styleTokens?.sourceHost) return false;
+          const bHost = b.styleTokens.sourceHost.toLowerCase().replace(/^www\./, '');
+          return host === bHost || host.endsWith('.' + bHost);
+        });
+        if (found && found.styleTokens) {
+          return { ...found.styleTokens, sourceHost: host };
         }
+      }
+
+      // Default neutral baseline fallback (only used when HTML has 0 styles)
+
+      // 1. Seznam Medium (Martel serif)
+      if (host === 'medium.seznam.cz' || host.endsWith('.medium.seznam.cz')) {
+        return {
+          brandColor: '#cc0000',
+          lightBg: '#fef2f2',
+          lightBorder: '#fecaca',
+          secondaryColor: '#191919',
+          headingColor: '#191919',
+          h1Color: '#191919',
+          h2Color: '#191919',
+          h3Color: '#191919',
+          h4Color: '#191919',
+          pColor: '#2c2c2c',
+          bodyFont: 'Martel, "Martel-Regular", Georgia, serif',
+          headingFont: 'Martel, "Martel-Regular", Georgia, serif',
+          h4Font: 'Martel, "Martel-Regular", Georgia, serif',
+          sourceHost: host
+        };
+      }
+
+      // 1b. Seznam Zprávy (Martel)
+      if (host.includes('seznamzpravy.cz')) {
+        return {
+          brandColor: '#cc0000',
+          lightBg: '#fef2f2',
+          lightBorder: '#fecaca',
+          secondaryColor: '#191919',
+          headingColor: '#191919',
+          h1Color: '#191919',
+          h2Color: '#191919',
+          h3Color: '#191919',
+          h4Color: '#191919',
+          pColor: '#2c2c2c',
+          bodyFont: 'Martel, "Martel Block", Georgia, serif',
+          headingFont: 'Martel, "Martel Block", Georgia, serif',
+          h4Font: 'Martel, "Martel Block", Georgia, serif',
+          sourceHost: host
+        };
+      }
+
+      // 1c. Novinky / Seznam obecně
+      if (host.includes('novinky.cz') || host.includes('seznam.cz')) {
+        return {
+          brandColor: '#cc0000',
+          lightBg: '#fef2f2',
+          lightBorder: '#fecaca',
+          secondaryColor: '#191919',
+          headingColor: '#191919',
+          h1Color: '#191919',
+          h2Color: '#191919',
+          h3Color: '#191919',
+          h4Color: '#191919',
+          pColor: '#2c2c2c',
+          bodyFont: 'Arial, sans-serif',
+          headingFont: 'Arial, sans-serif',
+          h4Font: 'Arial, sans-serif',
+          sourceHost: host
+        };
+      }
+
+      // 2. Echo24
+      if (host.includes('echo24.cz')) {
+        return {
+          brandColor: '#1accc8',
+          lightBg: '#f0fdfc',
+          lightBorder: '#99f6e4',
+          secondaryColor: '#372c2c',
+          headingColor: '#372c2c',
+          h1Color: '#372c2c',
+          h2Color: '#372c2c',
+          h3Color: '#372c2c',
+          h4Color: '#372c2c',
+          pColor: '#372c2c',
+          bodyFont: 'Source Serif 4',
+          headingFont: 'Source Serif 4',
+          h4Font: 'Source Serif 4',
+          sourceHost: host
+        };
+      }
+
+      // 3. Aktuálně.cz / Economia / HN
+      if (host.includes('aktualne.cz') || host.includes('hn.cz')) {
+        return {
+          brandColor: '#cc0000',
+          lightBg: '#fef2f2',
+          lightBorder: '#fecaca',
+          secondaryColor: '#05171f',
+          headingColor: '#05171f',
+          h1Color: '#05171f',
+          h2Color: '#05171f',
+          h3Color: '#05171f',
+          h4Color: '#05171f',
+          pColor: '#05171f',
+          bodyFont: 'Inter',
+          headingFont: 'Barlow',
+          h4Font: 'Barlow',
+          sourceHost: host
+        };
+      }
+
+      // 4. Jirka Mucha / Personal Blogs / Astra / Kadence
+      if (host.includes('jirkamucha.cz')) {
+        return {
+          brandColor: '#ffd936',
+          lightBg: '#fefce8',
+          lightBorder: '#fef08a',
+          secondaryColor: '#6a3a1a',
+          headingColor: '#6a3a1a',
+          h1Color: '#6a3a1a',
+          h2Color: '#6a3a1a',
+          h3Color: '#6a3a1a',
+          h4Color: '#6a3a1a',
+          pColor: '#404040',
+          bodyFont: 'DM Sans',
+          headingFont: 'Verdana',
+          h4Font: 'Forum',
+          sourceHost: host
+        };
+      }
+
+      // 5. Saxoškola.cz
+      if (host.includes('saxoskola.cz')) {
+        return {
+          brandColor: '#2a4861',
+          lightBg: '#f0f7ff',
+          lightBorder: '#cbd5e1',
+          secondaryColor: '#1e3a5f',
+          headingColor: '#2a4861',
+          h1Color: '#2a4861',
+          h2Color: '#2a4861',
+          h3Color: '#2a4861',
+          h4Color: '#2a4861',
+          pColor: '#334155',
+          bodyFont: 'Barlow',
+          headingFont: 'Barlow',
+          h4Font: 'Barlow',
+          sourceHost: host
+        };
+      }
+
+      // 6. Wikipedia
+      if (host.includes('wikipedia.org')) {
+        return {
+          brandColor: '#0f4dc9',
+          lightBg: '#f8f9fa',
+          lightBorder: '#a2a9b1',
+          secondaryColor: '#202122',
+          headingColor: '#000000',
+          h1Color: '#000000',
+          h2Color: '#000000',
+          h3Color: '#000000',
+          h4Color: '#000000',
+          pColor: '#202122',
+          bodyFont: 'Linux Libertine',
+          headingFont: 'Linux Libertine',
+          h4Font: 'Linux Libertine',
+          sourceHost: host
+        };
+      }
+
+      // 7. iDNES / Lidovky
+      if (host.includes('idnes.cz') || host.includes('lidovky.cz')) {
+        return {
+          brandColor: '#0066b3',
+          lightBg: '#f0f7ff',
+          lightBorder: '#bae6fd',
+          secondaryColor: '#222222',
+          headingColor: '#222222',
+          h1Color: '#222222',
+          h2Color: '#222222',
+          h3Color: '#222222',
+          h4Color: '#222222',
+          pColor: '#333333',
+          bodyFont: 'Inter',
+          headingFont: 'Inter',
+          h4Font: 'Inter',
+          sourceHost: host
+        };
+      }
+
+      // 8. ČT24 / Česká televize
+      if (host.includes('ceskatelevize.cz') || host.includes('ct24.cz')) {
+        return {
+          brandColor: '#003399',
+          lightBg: '#eff6ff',
+          lightBorder: '#bfdbfe',
+          secondaryColor: '#111111',
+          headingColor: '#111111',
+          h1Color: '#111111',
+          h2Color: '#111111',
+          h3Color: '#111111',
+          h4Color: '#111111',
+          pColor: '#222222',
+          bodyFont: 'Inter',
+          headingFont: 'Inter',
+          h4Font: 'Inter',
+          sourceHost: host
+        };
+      }
+
+      // 9. Deník N
+      if (host.includes('denikn.cz')) {
+        return {
+          brandColor: '#ff5138',
+          lightBg: '#fff1f0',
+          lightBorder: '#ffccc7',
+          secondaryColor: '#1a1a1a',
+          headingColor: '#1a1a1a',
+          h1Color: '#1a1a1a',
+          h2Color: '#1a1a1a',
+          h3Color: '#1a1a1a',
+          h4Color: '#1a1a1a',
+          pColor: '#2d2d2d',
+          bodyFont: 'Lumin, Inter, sans-serif',
+          headingFont: 'Lumin, Merriweather, serif',
+          h4Font: 'Lumin, Merriweather, serif',
+          sourceHost: host
+        };
+      }
+
+      // 10. TechCrunch
+      if (host.includes('techcrunch.com')) {
+        return {
+          brandColor: '#00d084',
+          lightBg: '#f0fdf4',
+          lightBorder: '#bbf7d0',
+          secondaryColor: '#111111',
+          headingColor: '#111111',
+          h1Color: '#111111',
+          h2Color: '#111111',
+          h3Color: '#111111',
+          h4Color: '#111111',
+          pColor: '#222222',
+          bodyFont: 'Roboto',
+          headingFont: 'Source Serif 4',
+          h4Font: 'Source Serif 4',
+          sourceHost: host
+        };
+      }
+
+      // 11. The Verge
+      if (host.includes('theverge.com')) {
+        return {
+          brandColor: '#e0124b',
+          lightBg: '#fff1f2',
+          lightBorder: '#fecdd3',
+          secondaryColor: '#121212',
+          headingColor: '#121212',
+          h1Color: '#121212',
+          h2Color: '#121212',
+          h3Color: '#121212',
+          h4Color: '#121212',
+          pColor: '#242424',
+          bodyFont: 'Inter',
+          headingFont: 'Manrope',
+          h4Font: 'Manrope',
+          sourceHost: host
+        };
+      }
+
+      // 12. Vercel
+      if (host.includes('vercel.com')) {
+        return {
+          brandColor: '#000000',
+          lightBg: '#fafafa',
+          lightBorder: '#e5e5e5',
+          secondaryColor: '#171717',
+          headingColor: '#171717',
+          h1Color: '#171717',
+          h2Color: '#171717',
+          h3Color: '#171717',
+          h4Color: '#171717',
+          pColor: '#333333',
+          bodyFont: 'Inter',
+          headingFont: 'Inter',
+          h4Font: 'Inter',
+          sourceHost: host
+        };
+      }
+
+      // 13. Substack
+      if (host.includes('substack.com')) {
+        return {
+          brandColor: '#ff6719',
+          lightBg: '#fff7ed',
+          lightBorder: '#fed7aa',
+          secondaryColor: '#111111',
+          headingColor: '#111111',
+          h1Color: '#111111',
+          h2Color: '#111111',
+          h3Color: '#111111',
+          h4Color: '#111111',
+          pColor: '#222222',
+          bodyFont: 'Inter',
+          headingFont: 'Lora',
+          h4Font: 'Lora',
+          sourceHost: host
+        };
+      }
+
+      // Generic Clean Editorial Fallback
+      return {
+        brandColor: '#0284c7',
+        lightBg: '#f0f9ff',
+        lightBorder: '#bae6fd',
+        secondaryColor: '#0f172a',
+        headingColor: '#0f172a',
+        h1Color: '#0f172a',
+        h2Color: '#0284c7',
+        h3Color: '#0369a1',
+        h4Color: '#0f172a',
+        pColor: '#1e293b',
+        bodyFont: 'Inter',
+        headingFont: 'Outfit',
+        h4Font: 'Outfit',
+        sourceHost: host
       };
     }
 
@@ -1862,170 +3366,422 @@
     }
 
     static getSampleArticles() {
+      if (typeof GlobalBenchmarkRegistry !== 'undefined' && typeof GlobalBenchmarkRegistry.getAll === 'function') {
+        return GlobalBenchmarkRegistry.getAll();
+      }
       return [
+        {
+          id: 'seznam-sample',
+          title: 'Ráj snů se změnil v město duchů. Ukryli se v něm podvodníci',
+          sourceUrl: 'https://www.seznamzpravy.cz/clanek/zahranicni-raj-snu-se-zmenil-v-mesto-duchu-ukryli-se-v-nem-podvodnici-312456',
+          styleTokens: {
+            brandColor: '#cc0000',
+            lightBg: '#fef2f2',
+            lightBorder: '#fecaca',
+            secondaryColor: '#191919',
+            headingColor: '#191919',
+            h1Color: '#191919',
+            h2Color: '#191919',
+            h3Color: '#191919',
+            h4Color: '#191919',
+            pColor: '#2c2c2c',
+            bodyFont: 'Martel, "Martel Block", Georgia, serif',
+            headingFont: 'Martel, "Martel Block", Georgia, serif',
+            h4Font: 'Martel, "Martel Block", Georgia, serif',
+            sourceHost: 'www.seznamzpravy.cz'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#cc0000">
+            <style>
+              :root {
+                --color-brand: #cc0000;
+                --color-heading: #191919;
+                --color-text: #2c2c2c;
+              }
+              h1, .mol-article-header__title { font-family: "Martel", Georgia, serif; color: #191919; font-size: 34px; line-height: 1.3; }
+              h2, h3, h4 { font-family: "Martel", Georgia, serif; color: #191919; }
+              p, .mol-paragraph { font-family: "Martel", Georgia, serif; color: #2c2c2c; font-size: 17px; line-height: 1.7; }
+            </style>
+          </head>
+          <body>
+            <h1 class="mol-article-header__title">Ráj snů se změnil v město duchů. Ukryli se v něm podvodníci</h1>
+            <div class="mol-article-content">
+              <p class="doc-element lead-paragraph">Když policie nedávno provedla razii v jedné z věží „zeleného“ malajsijského megakomplexu Forest City, místo bohatých obyvatel našla stovky lidí provozujících sofistikovaná podvodná call centra.</p>
+              <p class="doc-element">Projekt, který měl být chloubou moderního ekologického bydlení za 100 miliard dolarů, dnes zeje prázdnotou. Obrovské mrakodrapy obklopené umělými plážemi a tropickými zahradami přilákaly jen zlomek z plánovaných 700 tisíc obyvatel.</p>
+              <p class="doc-element">V opuštěných prostorách luxusních rezidencí tak našly zázemí mezinárodní zločinecké gangy, které z Malajsie cílily na oběti v Číně a jihovýchodní Asii.</p>
+            </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Ráj snů se změnil v město duchů. Ukryli se v něm podvodníci</h1>
+            <p class="doc-element lead-paragraph">Když policie nedávno provedla razii v jedné z věží „zeleného“ malajsijského megakomplexu Forest City, místo bohatých obyvatel našla stovky lidí provozujících sofistikovaná podvodná call centra.</p>
+            <p class="doc-element">Projekt, který měl být chloubou moderního ekologického bydlení za 100 miliard dolarů, dnes zeje prázdnotou. Obrovské mrakodrapy obklopené umělými plážemi a tropickými zahradami přilákaly jen zlomek z plánovaných 700 tisíc obyvatel.</p>
+            <p class="doc-element">V opuštěných prostorách luxusních rezidencí tak našly zázemí mezinárodní zločinecké gangy, které z Malajsie cílily na oběti v Číně a jihovýchodní Asii.</p>
+          `
+        },
+        {
+          id: 'echo24-sample',
+          title: 'Spor kvůli Ceutě se dál vyhrocuje. Španělsko odmítlo vstup deseti lidem cestujícím z Itálie',
+          sourceUrl: 'https://www.echo24.cz/a/HiGhe/zpravy-svet-spanelsko-odmitlo-vstup-deseti-lidem-z-italie-prvni-den-kontrol-proverilo-199-cestujicich',
+          styleTokens: {
+            brandColor: '#1accc8',
+            lightBg: '#f0fdfc',
+            lightBorder: '#99f6e4',
+            secondaryColor: '#372c2c',
+            headingColor: '#372c2c',
+            h1Color: '#372c2c',
+            h2Color: '#372c2c',
+            h3Color: '#372c2c',
+            h4Color: '#372c2c',
+            pColor: '#372c2c',
+            bodyFont: 'Source Serif 4',
+            headingFont: 'Source Serif 4',
+            sourceHost: 'www.echo24.cz'
+          },
+          rawHtml: `<html><head>
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600&family=Source+Serif+4:wght@400;600;700&display=swap">
+            <style>
+              :root { --color-theme: #1accc8; --color-primary: #372c2c; }
+              .articleNewDetail__title { font-family: "Source Serif 4", Arial, sans-serif; color: #372c2c; font-size: 38px; }
+              .articleNewDetail__content, .articleNewDetail__content>p { font-family: "Source Serif 4", Arial, sans-serif; color: #372c2c; font-size: 18px; line-height: 1.6; }
+            </style>
+          </head>
+          <body>
+            <h1 class="articleNewDetail__title">Spor kvůli Ceutě se dál vyhrocuje. Španělsko odmítlo vstup deseti lidem cestujícím z Itálie</h1>
+            <div class="articleNewDetail__content">
+              <p class="doc-element lead-paragraph">Španělsko během prvního dne obnovených hraničních kontrol odmítlo vstup deseti cestujícím z Itálie v souvislosti se sporem o autonomní město Ceuta.</p>
+              <p class="doc-element">Hraniční policie a celní správa prověřily celkem 199 cestujících. Podle oficiálního prohlášení ministerstva vnitra v Madridu je cílem těchto opatření zajistit bezpečnost a dodržování platných migračních předpisů v celé schengenské zóně.</p>
+              <p class="doc-element">Situace vyvolala diplomatické napětí mezi oběma státy, přičemž zástupci italské vlády požadují okamžité vysvětlení a zmírnění zavedených restrikcí.</p>
+            </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Spor kvůli Ceutě se dál vyhrocuje. Španělsko odmítlo vstup deseti lidem cestujícím z Itálie</h1>
+            <p class="doc-element lead-paragraph">Španělsko během prvního dne obnovených hraničních kontrol odmítlo vstup deseti cestujícím z Itálie v souvislosti se sporem o autonomní město Ceuta.</p>
+            <p class="doc-element">Hraniční policie a celní správa prověřily celkem 199 cestujících. Podle oficiálního prohlášení ministerstva vnitra v Madridu je cílem těchto opatření zajistit bezpečnost a dodržování platných migračních předpisů v celé schengenské zóně.</p>
+            <p class="doc-element">Situace vyvolala diplomatické napětí mezi oběma státy, přičemž zástupci italské vlády požadují okamžité vysvětlení a zmírnění zavedených restrikcí.</p>
+          `
+        },
+        {
+          id: 'aktualne-sample',
+          title: 'Ekonomický zázrak skončil. Tygr je bez drápů, země se zmítá v politické krizi',
+          sourceUrl: 'https://zpravy.aktualne.cz/zahranici/ekonomicky-zazrak-skoncil-tygr-je-bez-drapu-zeme-se-zmita-v-politicke-krizi/r~aaa29ca8be5072d5ae0766eb790bc5c6/',
+          styleTokens: {
+            brandColor: '#cc0000',
+            lightBg: '#fef2f2',
+            lightBorder: '#fecaca',
+            secondaryColor: '#05171f',
+            headingColor: '#05171f',
+            h1Color: '#05171f',
+            h2Color: '#05171f',
+            h3Color: '#05171f',
+            h4Color: '#05171f',
+            pColor: '#05171f',
+            bodyFont: 'Inter',
+            headingFont: 'Barlow',
+            sourceHost: 'zpravy.aktualne.cz'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#cc0000">
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@600;700&family=Inter:wght@400;500;600&display=swap">
+            <style>
+              :root {
+                --tt-gray-light-a-900: #05171F;
+                --bs-body-color: #05171F;
+                --bs-body-font-family: "Inter", sans-serif;
+              }
+              .e-web-aktualne-articles-show__title { font-family: "Barlow", sans-serif; color: #05171F; font-size: 36px; }
+              .e-web-aktualne-articles-show-body, .e-web-aktualne-articles-show-body>p { font-family: "Inter", sans-serif; color: #05171F; font-size: 17px; line-height: 1.6; }
+            </style>
+          </head>
+          <body>
+            <h1 class="e-web-aktualne-articles-show__title">Ekonomický zázrak skončil. Tygr je bez drápů, země se zmítá v politické krizi</h1>
+            <div class="e-web-aktualne-articles-show-body">
+              <p class="doc-element lead-paragraph">Dlouhá léta obdivovaný hospodářský růst se zadrhl. Asijská ekonomika, která byla po dekády dávána za vzor dynamického rozvoje, čelí strukturálním problémům a hluboké politické nestabilitě.</p>
+              <p class="doc-element">Podle analytiků Mezinárodního měnového fondu došlo k vyčerpání dosavadního modelu taženého exportem s nízkou přidanou hodnotou. Země nyní nutně potřebuje radikální reformy vzdělávání a digitalizace.</p>
+              <p class="doc-element">Opozice mezitím svolává masové demonstrace do hlavního města a požaduje demisi stávajícího kabinetu i vypsání předčasných parlamentních voleb.</p>
+            </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Ekonomický zázrak skončil. Tygr je bez drápů, země se zmítá v politické krizi</h1>
+            <p class="doc-element lead-paragraph">Dlouhá léta obdivovaný hospodářský růst se zadrhl. Asijská ekonomika, která byla po dekády dávána za vzor dynamického rozvoje, čelí strukturálním problémům a hluboké politické nestabilitě.</p>
+            <p class="doc-element">Podle analytiků Mezinárodního měnového fondu došlo k vyčerpání dosavadního modelu taženého exportem s nízkou přidanou hodnotou. Země nyní nutně potřebuje radikální reformy vzdělávání a digitalizace.</p>
+            <p class="doc-element">Opozice mezitím svolává masové demonstrace do hlavního města a požaduje demisi stávajícího kabinetu i vypsání předčasných parlamentních voleb.</p>
+          `
+        },
+        {
+          id: 'jirkamucha-sample',
+          title: 'KDYŽ MILUJEME VŠE, NEMILUJEME NIC - Jirka Mucha',
+          sourceUrl: 'https://www.jirkamucha.cz/2026/08/06/kdyz-milujeme-vse-nemilujeme-nic/',
+          styleTokens: {
+            brandColor: '#ffd936',
+            lightBg: '#fefce8',
+            lightBorder: '#fef08a',
+            secondaryColor: '#6a3a1a',
+            headingColor: '#6a3a1a',
+            h1Color: '#6a3a1a',
+            h2Color: '#6a3a1a',
+            h3Color: '#6a3a1a',
+            h4Color: '#6a3a1a',
+            pColor: '#404040',
+            bodyFont: 'DM Sans',
+            headingFont: 'Verdana',
+            h4Font: 'Forum',
+            sourceHost: 'www.jirkamucha.cz'
+          },
+          rawHtml: `<html><head>
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Forum&display=swap">
+            <style>
+              :root {
+                --ast-global-color-0: #ffd936;
+                --ast-global-color-1: #6a3a1a;
+                --ast-global-color-2: #536942;
+                --ast-global-color-3: #526840;
+              }
+              body, button, input { font-family: "DM Sans", sans-serif; }
+              .page-title, .entry-title { color: #6a3a1a; }
+              h1, .entry-content h1, h2, .entry-content h2, h3, .entry-content h3 { font-family: Verdana, Helvetica, Arial, sans-serif; color: #6a3a1a; }
+              h4, .entry-content h4 { font-family: 'Forum', display; color: #6a3a1a; font-size: 32px; }
+              .entry-content, .entry-content p { color: rgba(0, 0, 0, 0.75); font-family: "DM Sans", sans-serif; font-size: 18px; line-height: 1.8; }
+            </style>
+          </head>
+          <body>
+            <h1 class="entry-title">KDYŽ MILUJEME VŠE, NEMILUJEME NIC</h1>
+            <div class="entry-content">
+              <p class="doc-element lead-paragraph">Hluboké zamyšlení nad tím, jak rozptýlená pozornost a snaha vyhovět všem vede k vyprázdnění skutečných životních hodnot a priorit.</p>
+              <h4 class="wp-block-heading">1. Hledání vlastní cesty v přehlceném světě</h4>
+              <p class="doc-element">V moderní době jsme neustále zaplavováni možnostmi, nabídkami a podněty. Pokud si však nevybereme to podstatné, ztrácíme kontakt se sebou samými a s lidmi, na kterých nám doopravdy záleží.</p>
+              <h4 class="wp-block-heading">2. Umění vědomého odmítnutí</h4>
+              <p class="doc-element">Říci „ne“ nepodstatným věcem je základním předpokladem pro to, abychom mohli říci upřímné a plné „ano“ tomu, co má trvalý smysl.</p>
+            </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">KDYŽ MILUJEME VŠE, NEMILUJEME NIC</h1>
+            <p class="doc-element lead-paragraph">Hluboké zamyšlení nad tím, jak rozptýlená pozornost a snaha vyhovět všem vede k vyprázdnění skutečných životních hodnot a priorit.</p>
+            <h4 class="doc-element doc-h4">1. Hledání vlastní cesty v přehlceném světě</h4>
+            <p class="doc-element">V moderní době jsme neustále zaplavováni možnostmi, nabídkami a podněty. Pokud si však nevybereme to podstatné, ztrácíme kontakt se sebou samými a s lidmi, na kterých nám doopravdy záleží.</p>
+            <h4 class="doc-element doc-h4">2. Umění vědomého odmítnutí</h4>
+            <p class="doc-element">Říci „ne“ nepodstatným věcem je základním předpokladem pro to, abychom mohli říci upřímné a plné „ano“ tomu, co má trvalý smysl.</p>
+          `
+        },
         {
           id: 'sax-types-sample',
           title: 'Typy saxofonu – popis, tabulka a transpozice',
           sourceUrl: 'https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/',
+          styleTokens: {
+            brandColor: '#2a4861',
+            lightBg: '#f0f7ff',
+            lightBorder: '#cbd5e1',
+            secondaryColor: '#1e3a5f',
+            headingColor: '#2a4861',
+            h1Color: '#2a4861',
+            h2Color: '#2a4861',
+            h3Color: '#2a4861',
+            pColor: '#334155',
+            bodyFont: 'Barlow',
+            headingFont: 'Barlow',
+            sourceHost: 'www.saxoskola.cz'
+          },
           htmlContent: `
             <h1 class="doc-element doc-h1">Typy saxofonu</h1>
-            <p class="doc-element lead-paragraph">Saxovým záměrem bylo vytvoření celé rodiny saxofonů od sopraninového až po subkontrabasový. Dnes sice tyto nástroje existují, avšak běžnými se staly pouze sopránový (v ladění B), altový (in Es), tenorový (in B) a barytonový (in Es). Tyto nástroje jsou v ladění původně určeném pro vojenské orchestry. Sax sice navrhnul a postavil i nástroje v ladění C (soprán, tenor) a F (alt, baryton) pro využití v symfonickém orchestru, avšak ty se neujaly.</p>
-            
+            <p class="doc-element lead-paragraph">Saxovým záměrem bylo vytvoření celé rodiny saxofonů od sopraninového až po subkontrabasový. Dnes sice tyto nástroje existují, avšak běžnými se staly pouze sopránový (v ladění B), altový (in Es), tenorový (in B) a barytonový (in Es).</p>
             <p class="doc-element">Psaný rozsah pro všechny typy je od malého hes po f (fis)3. Fis3 je v závorce, neboť ne každý saxofon je s horní fis klapkou. Znějící rozsah je pak u sopránového saxofonu as – e (es)3, altového des – a (as)2, tenorového As – e (es)2 a barytonového saxofonu Des – a (as)1.</p>
-
-            <figure class="doc-element doc-table-figure" data-block-type="figure">
-              <table class="doc-element doc-image-table" style="width: 100%; border-collapse: collapse; background: #ffffff;">
-                <tbody>
-                  <tr>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image001.gif" alt="Sopranino sax." style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image002.gif" alt="Sopranino zahnutý" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image003.gif" alt="Soprán sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                  </tr>
-                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f0f9ff);">
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">sopranino saxofon</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">sopranino saxofon (zahnutý)</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">soprán saxofon</td>
-                  </tr>
-                  <tr>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image004.gif" alt="Soprán zahnutý" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image005.gif" alt="Alt sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image006.gif" alt="Tenor sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                  </tr>
-                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f0f9ff);">
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">soprán saxofon (zahnutý)</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">alt saxofon</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">tenor saxofon</td>
-                  </tr>
-                  <tr>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image007.gif" alt="Baryton sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image008.gif" alt="Bas sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                    <td style="text-align: center; padding: 6px; border: 1px solid var(--doc-border, #cbd5e1);"><img src="https://www.saxoskola.cz/wp-content/uploads/2021/03/image009.gif" alt="Kontrabas sax" style="max-height: 140px; width: auto;" loading="lazy"></td>
-                  </tr>
-                  <tr style="font-size: 8.5pt; font-weight: 600; background: var(--doc-primary-light, #f0f9ff);">
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">baryton saxofon</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">bas saxofon</td>
-                    <td style="text-align: center; padding: 4px; border: 1px solid var(--doc-border, #cbd5e1);">kontrabas saxofon</td>
-                  </tr>
-                </tbody>
-              </table>
-              <figcaption style="font-size: 7.5pt; color: #64748b; text-align: center; margin-top: 4px;">Obrázek převzat ze zaniklých stránek saxik.com</figcaption>
-            </figure>
-
-            <h2 class="doc-element doc-h2">Rozsah a transpozice nejčastěji používaných saxofonů</h2>
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Rozsah-a-transpozice-saxu.svg" alt="Rozsah a transpozice saxofonů" class="doc-element" loading="lazy">
-              <figcaption>Přehled rozsahu a transpozice hlavních typů saxofonů</figcaption>
-            </figure>
-
-            <h2 class="doc-element doc-h2">Stupnice C dur na saxofonu a její transpozice do znějící tóniny</h2>
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Sopran-sax.svg" alt="Transpozice C dur Soprán sax" class="doc-element" loading="lazy">
-              <figcaption>Transpozice C dur – Soprán saxofon (in B)</figcaption>
-            </figure>
-
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Alt-sax.svg" alt="Transpozice C dur Alt sax" class="doc-element" loading="lazy">
-              <figcaption>Transpozice C dur – Alt saxofon (in Es)</figcaption>
-            </figure>
-
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Tenor-sax.svg" alt="Transpozice C dur Tenor sax" class="doc-element" loading="lazy">
-              <figcaption>Transpozice C dur – Tenor saxofon (in B)</figcaption>
-            </figure>
-
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://www.saxoskola.cz/wp-content/uploads/2024/03/Transpozice-C-dur-Baryton-sax.svg" alt="Transpozice C dur Baryton sax" class="doc-element" loading="lazy">
-              <figcaption>Transpozice C dur – Baryton saxofon (in Es)</figcaption>
-            </figure>
-
-            <h2 class="doc-element doc-h2">Soprán, sopranino a soprillo saxofon</h2>
-            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
-              <div class="doc-callout-header">🎬 Video ukázka: Vivaldi – Čtvero ročních dob: Jaro (Soprillo saxofon)</div>
-              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=NRf21NQ1btk" target="_blank" rel="noopener">https://www.youtube.com/watch?v=NRf21NQ1btk</a></p>
-              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/NRf21NQ1btk/hqdefault.jpg" alt="Vivaldi La Primavera soprillo" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
-            </div>
-
-            <h2 class="doc-element doc-h2">Saxofonový orchestr – sopran, alt, tenor, baryton, bass a kontrabas tubax</h2>
-            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
-              <div class="doc-callout-header">🎬 Video ukázka: Mi-Bemol Saxophone Ensemble – Dvořák Novosvětská symfonie č. 9</div>
-              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=4FiaRL1Kdnc" target="_blank" rel="noopener">https://www.youtube.com/watch?v=4FiaRL1Kdnc</a></p>
-              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/4FiaRL1Kdnc/hqdefault.jpg" alt="Mi-Bemol Saxophone Ensemble" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
-            </div>
-
-            <h2 class="doc-element doc-h2">Kontrabas saxofon a tubax</h2>
-            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
-              <div class="doc-callout-header">🎬 Video ukázka: Giant Contrabass Saxophone Duet</div>
-              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=VabhcbtK2Cg" target="_blank" rel="noopener">https://www.youtube.com/watch?v=VabhcbtK2Cg</a></p>
-              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/VabhcbtK2Cg/hqdefault.jpg" alt="GIANT Contrabass Saxophone Duet" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
-            </div>
-
-            <h2 class="doc-element doc-h2">Neobvyklé a unikátní saxofony</h2>
-            <div class="doc-callout doc-callout-video doc-element" data-block-type="callout" data-callout-type="video">
-              <div class="doc-callout-header">🎬 Video ukázka: Unheard of Instruments in the Saxophone Family</div>
-              <p><strong>Odkaz na nahrávku:</strong> <a href="https://www.youtube.com/watch?v=p-b6I1ihh2s" target="_blank" rel="noopener">https://www.youtube.com/watch?v=p-b6I1ihh2s</a></p>
-              <div style="text-align: center; margin-top: 6px;"><img src="https://img.youtube.com/vi/p-b6I1ihh2s/hqdefault.jpg" alt="Unheard of Instruments in Saxophone Family" style="max-width: 440px; width: 100%; border-radius: 6px; border: 1px solid var(--doc-border, #cbd5e1);" loading="lazy" onerror="this.style.display='none'"></div>
-            </div>
           `
         },
         {
           id: 'physics-sample',
           title: 'Kvantová fyzika: Princip neurčitosti a vlnově-korpuskulární dualismus',
           sourceUrl: 'https://cs.wikipedia.org/wiki/Kvantov%C3%A1_mechanika',
+          styleTokens: {
+            brandColor: '#3366cc',
+            lightBg: '#f8f9fa',
+            lightBorder: '#a2a9b1',
+            secondaryColor: '#202122',
+            headingColor: '#000000',
+            h1Color: '#000000',
+            h2Color: '#000000',
+            h3Color: '#000000',
+            pColor: '#202122',
+            bodyFont: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Lato, Helvetica, Arial, sans-serif',
+            headingFont: 'Linux Libertine',
+            sourceHost: 'cs.wikipedia.org'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#3366cc">
+            <style>
+              .mw-parser-output h1 { font-family: "Linux Libertine", Georgia, serif; color: #000000; }
+              .mw-parser-output p { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Lato, Helvetica, Arial, sans-serif; color: #202122; font-size: 14px; line-height: 1.6; }
+            </style>
+          </head><body>
+            <div class="mw-parser-output">
+              <h1>Kvantová fyzika: Princip neurčitosti a dualismus</h1>
+              <p>Kvantová mechanika představuje fundamentální teorii moderní fyziky, která popisuje chování hmoty a záření na atomární a subatomární úrovni.</p>
+              <p>Každý mikroskopický objekt vykazuje jak vlnové, tak částicové vlastnosti v závislosti na typu experimentu.</p>
+            </div>
+          </body></html>`,
           htmlContent: `
             <h1 class="doc-element doc-h1">Kvantová fyzika: Princip neurčitosti a dualismus</h1>
             <p class="doc-element lead-paragraph">Kvantová mechanika představuje fundamentální teorii moderní fyziky, která popisuje chování hmoty a záření na atomární a subatomární úrovni.</p>
-            
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Double-slit_experiment_results_Tanamura_2.jpg/440px-Double-slit_experiment_results_Tanamura_2.jpg" alt="Dvouštěrbinový experiment" class="doc-element" loading="lazy">
-              <figcaption>Obr. 1: Dvouštěrbinový experiment demonstrující postupný vznik interferenčního obrazce elektronů (A. Tonomura).</figcaption>
-            </figure>
-
-            <div class="doc-callout doc-callout-def doc-element" data-block-type="callout" data-callout-type="def">
-              <div class="doc-callout-header">💡 Definice: Heisenbergův princip neurčitosti</div>
-              <p>Nelze současně s libovolnou přesností změřit polohu (x) a hybnost (p) mikročástice:</p>
-              <code>Δx · Δp ≥ ℏ / 2</code>
-            </div>
-
-            <h2 class="doc-element doc-h2">1. Vlnově-korpuskulární dualismus</h2>
             <p class="doc-element">Každý mikroskopický objekt vykazuje jak vlnové, tak částicové vlastnosti v závislosti na typu experimentu.</p>
-
-            <div class="doc-callout doc-callout-task doc-element" data-block-type="callout" data-callout-type="task">
-              <div class="doc-callout-header">✏️ Příklad k procvičení: De Broglieova vlnová délka</div>
-              <p>Vypočítejte vlnovou délku elektronu urychleného potenciálovým rozdílem 100 V.</p>
-            </div>
           `
         },
         {
-          id: 'biology-sample',
-          title: 'Buněčná biologie: Fotosyntéza a energetický metabolismus rostlin',
-          sourceUrl: 'https://cs.wikipedia.org/wiki/Fotosynt%C3%A9za',
-          htmlContent: `
-            <h1 class="doc-element doc-h1">Fotosyntéza a energetický metabolismus rostlin</h1>
-            <p class="doc-element lead-paragraph">Fotosyntéza je biochemický proces přeměny sluneční energie na chemickou energii organických sloučenin za uvolňování kyslíku.</p>
-
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/db/Photosynthesis_overview.svg/500px-Photosynthesis_overview.svg.png" alt="Schéma fotosyntézy" class="doc-element" loading="lazy">
-              <figcaption>Obr. 2: Přehledové schéma fotosyntézy – světelná fáze a Calvinův cyklus.</figcaption>
-            </figure>
-
-            <div class="doc-callout doc-callout-summary doc-element" data-block-type="callout" data-callout-type="summary">
-              <div class="doc-callout-header">⭐ Souhrnná biochemická rovnice fotosyntézy</div>
-              <code>6 CO₂ + 12 H₂O + světelné kvantum (hν) ➔ C₆H₁₂O₆ + 6 O₂ + 6 H₂O</code>
+          id: 'techcrunch-sample',
+          title: 'Artificial Intelligence and the Next Era of Enterprise Computing',
+          sourceUrl: 'https://techcrunch.com/2026/08/20/ai-enterprise-computing-future/',
+          styleTokens: {
+            brandColor: '#00d084',
+            lightBg: '#f0fdf4',
+            lightBorder: '#bbf7d0',
+            secondaryColor: '#111111',
+            headingColor: '#111111',
+            h1Color: '#111111',
+            h2Color: '#111111',
+            h3Color: '#111111',
+            h4Color: '#111111',
+            pColor: '#222222',
+            bodyFont: 'Roboto',
+            headingFont: 'Source Serif 4',
+            h4Font: 'Source Serif 4',
+            sourceHost: 'techcrunch.com'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#00d084">
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=Roboto:wght@400;500&display=swap">
+            <style>
+              :root { --wp--preset--color--primary: #00d084; --wp--preset--color--contrast: #111111; }
+              h1.article__title { font-family: "Source Serif 4", Georgia, serif; color: #111111; font-size: 38px; }
+              .article-content p { font-family: "Roboto", sans-serif; color: #222222; font-size: 18px; line-height: 1.7; }
+            </style>
+          </head><body>
+            <h1 class="article__title">Artificial Intelligence and the Next Era of Enterprise Computing</h1>
+            <div class="article-content">
+              <p class="doc-element lead-paragraph">Enterprise software is experiencing its most rapid transformation in decades as autonomous agents integrate directly into core infrastructure workflows.</p>
+              <p class="doc-element">Founders and tech executives are rethinking operational foundations from data ingestion to user interaction layers.</p>
             </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Artificial Intelligence and the Next Era of Enterprise Computing</h1>
+            <p class="doc-element lead-paragraph">Enterprise software is experiencing its most rapid transformation in decades as autonomous agents integrate directly into core infrastructure workflows.</p>
+            <p class="doc-element">Founders and tech executives are rethinking operational foundations from data ingestion to user interaction layers.</p>
           `
         },
         {
-          id: 'history-sample',
-          title: 'Metodika výuky dějepisu: Kritická analýza historických pramenů',
-          sourceUrl: 'https://cs.wikipedia.org/wiki/Historick%C3%BD_pramen',
+          id: 'theverge-sample',
+          title: 'The Future of Spatial Computing and Display Technologies',
+          sourceUrl: 'https://www.theverge.com/2026/8/15/spatial-computing-next-generation',
+          styleTokens: {
+            brandColor: '#e0124b',
+            lightBg: '#fff1f2',
+            lightBorder: '#fecdd3',
+            secondaryColor: '#121212',
+            headingColor: '#121212',
+            h1Color: '#121212',
+            h2Color: '#121212',
+            h3Color: '#121212',
+            h4Color: '#121212',
+            pColor: '#242424',
+            bodyFont: 'Inter',
+            headingFont: 'Manrope',
+            h4Font: 'Manrope',
+            sourceHost: 'www.theverge.com'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#e0124b">
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=Inter:wght@400;500&display=swap">
+            <style>
+              h1.duet--article--headline { font-family: "Manrope", sans-serif; color: #121212; font-size: 40px; }
+              .duet--article--body p { font-family: "Inter", sans-serif; color: #242424; font-size: 18px; line-height: 1.65; }
+            </style>
+          </head><body>
+            <h1 class="duet--article--headline">The Future of Spatial Computing and Display Technologies</h1>
+            <div class="duet--article--body">
+              <p class="doc-element lead-paragraph">New optical waveguides and micro-OLED panels are pushing pixel density to boundaries previously thought impractical for consumer devices.</p>
+              <p class="doc-element">As hardware becomes lighter and thermal dissipation improves, wearable displays are transitioning from niche novelties to everyday computing tools.</p>
+            </div>
+          </body></html>`,
           htmlContent: `
-            <h1 class="doc-element doc-h1">Kritická analýza primárních historických pramenů</h1>
-            <p class="doc-element lead-paragraph">Moderní dějepisná výuka opouští memorování letopočtů a staví na badatelsky orientovaném vyučování s primárními prameny.</p>
-
-            <figure class="doc-element" data-block-type="figure">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/Declaration_of_Independence_1819_by_John_Trumbull.jpeg/480px-Declaration_of_Independence_1819_by_John_Trumbull.jpeg" alt="Historický pramen" class="doc-element" loading="lazy">
-              <figcaption>Obr. 3: Obraz Johna Trumbulla – Umělecké ztvárnění podpisu Deklarace nezávislosti.</figcaption>
-            </figure>
+            <h1 class="doc-element doc-h1">The Future of Spatial Computing and Display Technologies</h1>
+            <p class="doc-element lead-paragraph">New optical waveguides and micro-OLED panels are pushing pixel density to boundaries previously thought impractical for consumer devices.</p>
+            <p class="doc-element">As hardware becomes lighter and thermal dissipation improves, wearable displays are transitioning from niche novelties to everyday computing tools.</p>
+          `
+        },
+        {
+          id: 'vercel-sample',
+          title: 'Building Resilient Global Web Applications with Modern Edge Runtimes',
+          sourceUrl: 'https://vercel.com/blog/resilient-edge-runtimes',
+          styleTokens: {
+            brandColor: '#000000',
+            lightBg: '#fafafa',
+            lightBorder: '#e5e5e5',
+            secondaryColor: '#171717',
+            headingColor: '#171717',
+            h1Color: '#171717',
+            h2Color: '#171717',
+            h3Color: '#171717',
+            h4Color: '#171717',
+            pColor: '#333333',
+            bodyFont: 'Inter',
+            headingFont: 'Inter',
+            h4Font: 'Inter',
+            sourceHost: 'vercel.com'
+          },
+          rawHtml: `<html><head>
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+            <style>
+              h1.font-extrabold { font-family: "Inter", -apple-system, sans-serif; color: #171717; font-size: 36px; font-weight: 800; }
+              article p.text-gray-700 { font-family: "Inter", -apple-system, sans-serif; color: #333333; font-size: 17px; line-height: 1.7; }
+            </style>
+          </head><body>
+            <article>
+              <h1 class="font-extrabold text-[#171717]">Building Resilient Global Web Applications with Modern Edge Runtimes</h1>
+              <p class="doc-element lead-paragraph text-gray-700">Deploying compute close to users eliminates geographic latency while drastically simplifying traditional cache invalidation challenges.</p>
+              <p class="doc-element text-gray-700">With instant cold starts and regional failover primitives, modern cloud architectures ensure continuous availability under unpredictable traffic surges.</p>
+            </article>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">Building Resilient Global Web Applications with Modern Edge Runtimes</h1>
+            <p class="doc-element lead-paragraph">Deploying compute close to users eliminates geographic latency while drastically simplifying traditional cache invalidation challenges.</p>
+            <p class="doc-element">With instant cold starts and regional failover primitives, modern cloud architectures ensure continuous availability under unpredictable traffic surges.</p>
+          `
+        },
+        {
+          id: 'substack-sample',
+          title: 'The Architecture of Thought: Reflections on Writing and Focus',
+          sourceUrl: 'https://writing.substack.com/p/architecture-of-thought',
+          styleTokens: {
+            brandColor: '#ff6719',
+            lightBg: '#fff7ed',
+            lightBorder: '#fed7aa',
+            secondaryColor: '#111111',
+            headingColor: '#111111',
+            h1Color: '#111111',
+            h2Color: '#111111',
+            h3Color: '#111111',
+            h4Color: '#111111',
+            pColor: '#222222',
+            bodyFont: 'Inter',
+            headingFont: 'Lora',
+            h4Font: 'Lora',
+            sourceHost: 'substack.com'
+          },
+          rawHtml: `<html><head>
+            <meta name="theme-color" content="#ff6719">
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,600;0,700;1,400&family=Inter:wght@400;500&display=swap">
+            <style>
+              :root { --substack-accent: #ff6719; }
+              h1.post-title { font-family: "Lora", Georgia, serif; color: #111111; font-size: 38px; }
+              .body.markup p { font-family: "Inter", -apple-system, sans-serif; color: #222222; font-size: 18px; line-height: 1.8; }
+            </style>
+          </head><body>
+            <h1 class="post-title">The Architecture of Thought: Reflections on Writing and Focus</h1>
+            <div class="body markup">
+              <p class="doc-element lead-paragraph">Deep writing requires creating an intentional boundary between the stream of incoming information and the slower rhythm of contemplative synthesis.</p>
+              <p class="doc-element">When we protect our cognitive bandwidth, ideas connect across disciplines in ways that fast-paced browsing cannot replicate.</p>
+            </div>
+          </body></html>`,
+          htmlContent: `
+            <h1 class="doc-element doc-h1">The Architecture of Thought: Reflections on Writing and Focus</h1>
+            <p class="doc-element lead-paragraph">Deep writing requires creating an intentional boundary between the stream of incoming information and the slower rhythm of contemplative synthesis.</p>
+            <p class="doc-element">When we protect our cognitive bandwidth, ideas connect across disciplines in ways that fast-paced browsing cannot replicate.</p>
           `
         }
       ];
@@ -2089,9 +3845,7 @@
       };
 
       this.chapters.push(chapter);
-      if (!this.activeChapterId) {
-        this.activeChapterId = id;
-      }
+      this.activeChapterId = id;
       this._notify();
       return chapter;
     }
@@ -2220,6 +3974,7 @@
         pageNumFormat: 'prefix',
         showSourceInDoc: false,
         enableQRFootnotes: true,
+        hideLinks: false,
         enableAutoTOC: false,
         tocPosition: 'after-title',
         spreadView: false,
@@ -2242,6 +3997,32 @@
       document.body.setAttribute('data-img-shadow', this.config.imgShadow);
       document.body.setAttribute('data-img-radius', this.config.imgRadius);
       document.body.setAttribute('data-img-bg', this.config.imgBg);
+
+      if (this.config.hideLinks !== undefined) {
+        document.body.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
+        if (this.viewport) {
+          this.viewport.querySelectorAll('.paper-sheet').forEach(s => {
+            s.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
+          });
+        }
+      }
+
+      // Sync dynamic @page print rule so native browser print/PDF uses exact paper size and orientation
+      let styleEl = document.getElementById('dynamic-page-print-rule');
+      if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = 'dynamic-page-print-rule';
+        document.head.appendChild(styleEl);
+      }
+      const orient = this.config.orientation === 'landscape' ? 'landscape' : 'portrait';
+      let sizeToken = 'A4';
+      if (this.config.format === 'a5') sizeToken = 'A5';
+      else if (this.config.format === 'letter') sizeToken = 'letter';
+      else if (this.config.format === 'b5') {
+        sizeToken = orient === 'landscape' ? '250mm 176mm' : '176mm 250mm';
+      }
+      const pageSizeRule = this.config.format === 'b5' ? sizeToken : `${sizeToken} ${orient}`;
+      styleEl.textContent = `@page { size: ${pageSizeRule}; margin: 0mm; }`;
     }
 
     _getContentHeight(sheetBody) {
@@ -2255,11 +4036,17 @@
 
     _checkSheetOverflow(sheetBody, availableHeightPx, isMultiColumn) {
       if (isMultiColumn) {
-        if (sheetBody.scrollWidth > sheetBody.clientWidth + 4) return true;
+        if (sheetBody.scrollWidth > sheetBody.clientWidth + 3) return true;
+        if (sheetBody.scrollHeight > sheetBody.clientHeight + 3) return true;
         const children = sheetBody.children;
         if (children.length > 0) {
-          const last = children[children.length - 1];
-          if (last.offsetLeft + last.offsetWidth > sheetBody.clientWidth + 4) return true;
+          const bodyRect = sheetBody.getBoundingClientRect();
+          if (bodyRect.width > 0 && bodyRect.height > 0) {
+            const last = children[children.length - 1];
+            const lastRect = last.getBoundingClientRect();
+            if (lastRect.right > bodyRect.right + 3) return true;
+            if (lastRect.bottom > bodyRect.bottom + 3) return true;
+          }
         }
         return false;
       } else {
@@ -2297,7 +4084,10 @@
       sandbox.innerHTML = rawHtml;
       document.body.appendChild(sandbox);
 
-      const wrappers = Array.from(sandbox.querySelectorAll('.doc-chapter-container, .doc-content'));
+      // Remove any stray <style>, <meta>, <link>, <title>, <script> tags that might have been stored in raw HTML
+      sandbox.querySelectorAll('style, meta, link, title, script, head').forEach(el => el.remove());
+
+      const wrappers = Array.from(sandbox.querySelectorAll('.doc-chapter-container, .doc-content, article, main, .mol-article-content, .entry-content'));
       wrappers.forEach(wrap => {
         const chId = wrap.getAttribute('data-chapter-id') || '';
         const chTitle = wrap.getAttribute('data-chapter-title') || '';
@@ -2328,6 +4118,18 @@
         }
       });
 
+      // Automatically tag opening paragraph of each chapter for drop-caps and lead styling
+      const seenChaptersForLead = new Set();
+      Array.from(sandbox.children).forEach(el => {
+        if (el.tagName === 'P' && el.textContent.trim().length > 20) {
+          const chKey = el.getAttribute('data-chapter-id') || '__default__';
+          if (!seenChaptersForLead.has(chKey)) {
+            seenChaptersForLead.add(chKey);
+            el.classList.add('first-chapter-p');
+          }
+        }
+      });
+
       let elements = Array.from(sandbox.children);
 
       // TOC handling: Insert placeholder in correct spot
@@ -2339,6 +4141,7 @@
         dummyTOC.innerHTML = '<div class="doc-toc-title"><span>📑 Obsah dokumentu</span></div><div class="toc-placeholder" style="font-size: 8.5pt; color: var(--doc-text-muted);">Sestavuji obsah...</div>';
 
         if (this.config.tocPosition === 'standalone-page') {
+          dummyTOC.classList.add('standalone-toc');
           dummyTOC.setAttribute('data-break-before', 'true');
           const breakAfter = document.createElement('div');
           breakAfter.className = 'doc-element doc-page-break';
@@ -2350,7 +4153,17 @@
             insertIndex = firstH1Idx + 1;
           }
           elements.splice(insertIndex, 0, dummyTOC, breakAfter);
+        } else if (this.config.tocPosition === 'standalone-page-end') {
+          dummyTOC.classList.add('standalone-toc');
+          dummyTOC.setAttribute('data-break-before', 'true');
+          const breakBefore = document.createElement('div');
+          breakBefore.className = 'doc-element doc-page-break';
+          breakBefore.setAttribute('data-break-before', 'true');
+          elements.push(breakBefore, dummyTOC);
+        } else if (this.config.tocPosition === 'end-of-doc') {
+          elements.push(dummyTOC);
         } else {
+          // 'after-title'
           let insertIndex = 0;
           const firstH1Idx = elements.findIndex(e => e.tagName === 'H1' || e.classList.contains('doc-h1'));
           if (firstH1Idx !== -1) {
@@ -2367,6 +4180,9 @@
       if (this.config.format === 'a5') {
         sheetWidthMm = this.config.orientation === 'portrait' ? 148 : 210;
         sheetHeightMm = this.config.orientation === 'portrait' ? 210 : 148;
+      } else if (this.config.format === 'b5') {
+        sheetWidthMm = this.config.orientation === 'portrait' ? 176 : 250;
+        sheetHeightMm = this.config.orientation === 'portrait' ? 250 : 176;
       } else if (this.config.format === 'letter') {
         sheetWidthMm = this.config.orientation === 'portrait' ? 215.9 : 279.4;
         sheetHeightMm = this.config.orientation === 'portrait' ? 279.4 : 215.9;
@@ -2380,17 +4196,28 @@
       const needHeader = this.config.includeHeader || hasPageNumInHeader;
       const needFooter = this.config.includeFooter || hasPageNumInFooter;
 
-      const headerHeightMm = needHeader ? 12 : 0;
-      const footerHeightMm = needFooter ? 12 : 0;
+      const headerHeightMm = needHeader ? 7.5 : 0;
+      const footerHeightMm = needFooter ? 7.5 : 0;
       const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm);
       const availableHeightPx = Math.max(120, availableHeightMm * mmToPx);
       const isMultiCol = (this.config.columns || 1) > 1;
+
+      const lockBodyHeight = (sheet) => {
+        if (!isMultiCol) return;
+        const b = sheet.querySelector('.sheet-body');
+        if (!b) return;
+        const realH = b.clientHeight || availableHeightPx;
+        b.style.height = realH + 'px';
+        b.style.maxHeight = realH + 'px';
+        b.style.flex = `0 0 ${realH}px`;
+      };
 
       let pageCount = 1;
       let currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
       let currentSheetBody = currentSheet.querySelector('.sheet-body');
       this.zoomWrapper.appendChild(currentSheet);
       this.sheets.push(currentSheet);
+      lockBodyHeight(currentSheet);
 
       const maxLoopIterations = Math.max(500, elements.length * 4);
       let iterationCount = 0;
@@ -2418,6 +4245,7 @@
           currentSheetBody = currentSheet.querySelector('.sheet-body');
           this.zoomWrapper.appendChild(currentSheet);
           this.sheets.push(currentSheet);
+          lockBodyHeight(currentSheet);
           if (el.classList.contains('doc-page-break')) continue;
         }
 
@@ -2430,11 +4258,16 @@
         let headingNearBottom = false;
         if (isHeading) {
           if (!isMultiCol) {
-            headingNearBottom = this._getContentHeight(currentSheetBody) > (availableHeightPx - 60);
+            headingNearBottom = this._getContentHeight(currentSheetBody) > (availableHeightPx - 50);
           } else {
-            const cols = this.config.columns || 2;
-            const inLastCol = cloned.offsetLeft >= (currentSheetBody.clientWidth / cols) * (cols - 1) - 10;
-            headingNearBottom = inLastCol && (cloned.offsetTop > availableHeightPx - 60);
+            const bodyRect = currentSheetBody.getBoundingClientRect();
+            const headingRect = cloned.getBoundingClientRect();
+            if (bodyRect.width > 0 && bodyRect.height > 0) {
+              const cols = this.config.columns || 2;
+              const colWidth = bodyRect.width / cols;
+              const inLastCol = headingRect.left >= bodyRect.left + colWidth * (cols - 1) - 10;
+              headingNearBottom = inLastCol && (headingRect.bottom > bodyRect.bottom - 50);
+            }
           }
         }
 
@@ -2451,6 +4284,7 @@
               currentSheetBody = currentSheet.querySelector('.sheet-body');
               this.zoomWrapper.appendChild(currentSheet);
               this.sheets.push(currentSheet);
+              lockBodyHeight(currentSheet);
 
               elements.splice(i + 1, 0, continuationList);
               continue;
@@ -2467,6 +4301,7 @@
               currentSheetBody = currentSheet.querySelector('.sheet-body');
               this.zoomWrapper.appendChild(currentSheet);
               this.sheets.push(currentSheet);
+              lockBodyHeight(currentSheet);
 
               elements.splice(i + 1, 0, continuationEl);
               continue;
@@ -2475,12 +4310,24 @@
 
           cloned.remove();
 
+          // Heading orphan protection: if removing cloned leaves a trailing heading alone at bottom, move it along
+          let orphanedHeading = null;
+          const prevChild = currentSheetBody.lastElementChild;
+          if (prevChild && ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(prevChild.tagName) && currentSheetBody.children.length > 1) {
+            orphanedHeading = prevChild;
+            orphanedHeading.remove();
+          }
+
           pageCount++;
           currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
           currentSheetBody = currentSheet.querySelector('.sheet-body');
           this.zoomWrapper.appendChild(currentSheet);
           this.sheets.push(currentSheet);
+          lockBodyHeight(currentSheet);
 
+          if (orphanedHeading) {
+            currentSheetBody.appendChild(orphanedHeading);
+          }
           currentSheetBody.appendChild(cloned);
         }
       }
@@ -2537,6 +4384,7 @@
     }
 
     _splitParagraphAcrossPages(pElement, currentSheetBody, availableHeightPx, isMultiColumn) {
+      const originalHTML = pElement.innerHTML;
       const fullText = pElement.textContent.trim();
       const words = fullText.split(/\s+/);
       if (words.length < 12) return null;
@@ -2559,13 +4407,14 @@
       }
 
       if (bestSplit < 5 || bestSplit >= words.length - 4) {
-        pElement.textContent = fullText;
+        pElement.innerHTML = originalHTML;
         return null;
       }
 
       pElement.textContent = words.slice(0, bestSplit).join(' ');
       const nextP = document.createElement(pElement.tagName.toLowerCase());
       nextP.className = pElement.className;
+      nextP.classList.remove('first-chapter-p', 'lead-paragraph');
       nextP.setAttribute('data-block-id', pElement.getAttribute('data-block-id') + '_cont');
       nextP.textContent = words.slice(bestSplit).join(' ');
       return nextP;
@@ -2578,6 +4427,32 @@
       sheet.setAttribute('data-page-num', pageNum);
       sheet.setAttribute('data-format', this.config.format);
       sheet.setAttribute('data-orientation', this.config.orientation);
+      sheet.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
+
+      if (activeChapter) {
+        sheet.setAttribute('data-chapter-id', activeChapter.id);
+        const tok = activeChapter.styleTokens;
+        if (tok) {
+          if (tok.brandColor) sheet.style.setProperty('--web-extracted-primary', tok.brandColor);
+          if (tok.lightBg) sheet.style.setProperty('--web-extracted-bg', tok.lightBg);
+          if (tok.lightBorder) sheet.style.setProperty('--web-extracted-border', tok.lightBorder);
+          if (tok.secondaryColor) sheet.style.setProperty('--web-extracted-secondary', tok.secondaryColor);
+          if (tok.headingColor) sheet.style.setProperty('--web-extracted-heading', tok.headingColor);
+          if (tok.h1Color) sheet.style.setProperty('--web-h1-color', tok.h1Color);
+          if (tok.h2Color) sheet.style.setProperty('--web-h2-color', tok.h2Color);
+          if (tok.h3Color) sheet.style.setProperty('--web-h3-color', tok.h3Color);
+          if (tok.h4Color) sheet.style.setProperty('--web-h4-color', tok.h4Color);
+          if (tok.pColor) sheet.style.setProperty('--web-p-color', tok.pColor);
+          if (tok.bodyFont) {
+            const fStack = tok.bodyFont.includes(',') ? tok.bodyFont : ContentExtractor._buildFontStack(tok.bodyFont);
+            sheet.style.setProperty('--web-extracted-font', fStack);
+          }
+          if (tok.headingFont) {
+            const hStack = tok.headingFont.includes(',') ? tok.headingFont : ContentExtractor._buildFontStack(tok.headingFont);
+            sheet.style.setProperty('--web-extracted-heading-font', hStack);
+          }
+        }
+      }
 
       sheet.style.width = widthMm + 'mm';
       sheet.style.minHeight = heightMm + 'mm';
@@ -2616,6 +4491,8 @@
       body.setAttribute('data-columns', this.config.columns || 1);
       if ((this.config.columns || 1) > 1 && availableHeightPx) {
         body.style.height = availableHeightPx + 'px';
+        body.style.maxHeight = availableHeightPx + 'px';
+        body.style.flex = `0 0 ${availableHeightPx}px`;
       }
       inner.appendChild(body);
 
@@ -2708,6 +4585,8 @@
             footerCenterEl.innerHTML = pageSpan;
           } else if (pos === 'footer-right' && footerRightEl) {
             footerRightEl.innerHTML = pageSpan;
+          } else if (pos === 'footer-left' && footerLeftEl) {
+            footerLeftEl.innerHTML = pageSpan;
           } else if (pos === 'header-right-odd-left-even') {
             if (isOdd && headerRightEl) headerRightEl.innerHTML = pageSpan;
             else if (!isOdd && headerLeftEl) headerLeftEl.innerHTML = pageSpan;
@@ -3274,10 +5153,28 @@
   class WordExporter {
     static exportToDocx(htmlContent, title = 'Dokument', config = {}) {
       const cleanTitle = (title || 'Dokument').replace(/[\\/:*?"<>|]/g, '_');
-      const mTop = config.marginTop || 20;
-      const mBottom = config.marginBottom || 20;
-      const mLeft = config.marginLeft || 20;
-      const mRight = config.marginRight || 20;
+      const mTop = config.marginTop ?? 20;
+      const mBottom = config.marginBottom ?? 20;
+      const mLeft = config.marginLeft ?? 20;
+      const mRight = config.marginRight ?? 20;
+
+      const formatSizesPt = {
+        a4: [595.3, 841.9],
+        b5: [498.9, 708.7],
+        a5: [419.5, 595.3],
+        letter: [612.0, 792.0]
+      };
+      const basePt = formatSizesPt[config.format] || formatSizesPt.a4;
+      const isLandscape = config.orientation === 'landscape';
+      const pageW = isLandscape ? basePt[1] : basePt[0];
+      const pageH = isLandscape ? basePt[0] : basePt[1];
+
+      const computed = window.getComputedStyle(document.body);
+      const primaryColor = (computed.getPropertyValue('--doc-primary') || '#0284c7').trim();
+      const headingColor = (computed.getPropertyValue('--doc-headings') || '#0f172a').trim();
+      const textColor = (computed.getPropertyValue('--doc-text') || '#1e293b').trim();
+      const lightBg = (computed.getPropertyValue('--doc-primary-light') || '#f0f9ff').trim();
+      const borderColor = (computed.getPropertyValue('--doc-primary-border') || '#cbd5e1').trim();
 
       const wordHtml = `
         <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
@@ -3295,24 +5192,25 @@
           <![endif]-->
           <style>
             @page Section1 {
-              size: 595.3pt 841.9pt;
+              size: ${pageW}pt ${pageH}pt;
+              mso-page-orientation: ${isLandscape ? 'landscape' : 'portrait'};
               margin: ${mTop}mm ${mRight}mm ${mBottom}mm ${mLeft}mm;
-              mso-header-margin: 36pt;
-              mso-footer-margin: 36pt;
+              mso-header-margin: 24pt;
+              mso-footer-margin: 24pt;
               mso-paper-source: 0;
             }
             div.Section1 { page: Section1; }
-            body { font-family: 'Calibri', 'Segoe UI', sans-serif; font-size: 11pt; line-height: 1.4; color: #1e293b; }
-            h1 { font-size: 22pt; font-weight: bold; color: #0284c7; margin-top: 18pt; margin-bottom: 6pt; page-break-after: avoid; }
-            h2 { font-size: 16pt; font-weight: bold; color: #0369a1; border-bottom: 1.5pt solid #bae6fd; padding-bottom: 3pt; margin-top: 14pt; margin-bottom: 4pt; page-break-after: avoid; }
-            h3 { font-size: 13pt; font-weight: bold; color: #0f172a; margin-top: 10pt; margin-bottom: 3pt; page-break-after: avoid; }
+            body { font-family: 'Calibri', 'Segoe UI', sans-serif; font-size: 11pt; line-height: 1.5; color: ${textColor}; }
+            h1 { font-size: 22pt; font-weight: bold; color: ${headingColor}; margin-top: 18pt; margin-bottom: 6pt; page-break-after: avoid; }
+            h2 { font-size: 16pt; font-weight: bold; color: ${primaryColor}; border-bottom: 1.5pt solid ${borderColor}; padding-bottom: 3pt; margin-top: 14pt; margin-bottom: 4pt; page-break-after: avoid; }
+            h3 { font-size: 13pt; font-weight: bold; color: ${headingColor}; margin-top: 10pt; margin-bottom: 3pt; page-break-after: avoid; }
             p { margin-bottom: 6pt; text-align: justify; }
             table { width: 100%; border-collapse: collapse; margin: 10pt 0; }
-            th { background-color: #f0f9ff; color: #0f172a; font-weight: bold; border: 1pt solid #cbd5e1; padding: 6pt; text-align: center; }
-            td { border: 1pt solid #cbd5e1; padding: 6pt; vertical-align: middle; text-align: center; }
+            th { background-color: ${lightBg}; color: ${headingColor}; font-weight: bold; border: 1pt solid ${borderColor}; padding: 6pt; text-align: left; }
+            td { border: 1pt solid ${borderColor}; padding: 6pt; vertical-align: middle; text-align: left; }
             img { max-width: 100%; height: auto; display: block; margin: 6pt auto; }
-            blockquote { border-left: 3.5pt solid #0284c7; background: #f0f9ff; padding: 6pt 10pt; font-style: italic; margin: 8pt 0; }
-            .doc-callout { border-left: 4.5pt solid #0284c7; background: #f0f9ff; padding: 8pt 10pt; margin: 8pt 0; }
+            blockquote { border-left: 3.5pt solid ${primaryColor}; background: ${lightBg}; padding: 6pt 10pt; font-style: italic; margin: 8pt 0; }
+            .doc-callout { border-left: 4.5pt solid ${primaryColor}; background: ${lightBg}; padding: 8pt 10pt; margin: 8pt 0; }
           </style>
         </head>
         <body>
@@ -3381,6 +5279,67 @@
   }
 
   /* ==========================================================================
+     8.5. TEMPLATE MANAGER (Custom Templates, Import/Export & Persistence)
+     ========================================================================== */
+  class TemplateManager {
+    static STORAGE_KEY = 'url_printer_custom_templates';
+
+    static getCustomTemplates() {
+      try {
+        const raw = localStorage.getItem(TemplateManager.STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    static saveCustomTemplate(template) {
+      const list = TemplateManager.getCustomTemplates().filter(t => t.id !== template.id);
+      list.push(template);
+      localStorage.setItem(TemplateManager.STORAGE_KEY, JSON.stringify(list));
+      return list;
+    }
+
+    static deleteCustomTemplate(id) {
+      const list = TemplateManager.getCustomTemplates().filter(t => t.id !== id);
+      localStorage.setItem(TemplateManager.STORAGE_KEY, JSON.stringify(list));
+      return list;
+    }
+
+    static exportTemplatesJSON() {
+      const templates = TemplateManager.getCustomTemplates();
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(templates, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", "url-printer-templates.json");
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    }
+
+    static importTemplatesJSON(jsonString) {
+      try {
+        const parsed = JSON.parse(jsonString);
+        if (!Array.isArray(parsed)) throw new Error("Neplatný formát šablon (očekáváno pole)");
+        const existing = TemplateManager.getCustomTemplates();
+        const existingIds = new Set(existing.map(t => t.id));
+        parsed.forEach(item => {
+          if (item && item.id && item.name) {
+            if (existingIds.has(item.id)) {
+              item.id = item.id + '_' + Date.now();
+            }
+            existing.push(item);
+          }
+        });
+        localStorage.setItem(TemplateManager.STORAGE_KEY, JSON.stringify(existing));
+        return existing;
+      } catch (e) {
+        throw new Error("Chyba při importu šablon: " + e.message);
+      }
+    }
+  }
+
+  /* ==========================================================================
      9. URL PRINTER APPLICATION CORE
      ========================================================================== */
   class URLPrinterApp {
@@ -3409,11 +5368,35 @@
       this._bindModals();
       this._bindDragAndDrop();
       this._bindCanvasInteractions();
+      this._initCustomTemplates();
+
+      try {
+        const savedHideLinks = localStorage.getItem('url_printer_hide_links');
+        if (savedHideLinks !== null) {
+          const hide = savedHideLinks === 'true';
+          this.paginationEngine.config.hideLinks = hide;
+          document.body.setAttribute('data-hide-links', hide ? 'true' : 'false');
+        }
+      } catch (e) {}
 
       this._syncUIFromConfig(this.paginationEngine.config);
+      this._updateTemplateSpecCard(document.body.getAttribute('data-theme') || 'web-original');
 
       this.chapterManager.onChange((chapters, activeId) => {
         this._renderChapterTree(chapters, activeId);
+        const activeChap = this.chapterManager.getActiveChapter();
+        if (activeChap) {
+          try {
+            localStorage.setItem('urlprint_inspector_transfer', JSON.stringify({
+              title: activeChap.title || '',
+              sourceUrl: activeChap.sourceUrl || '',
+              htmlContent: activeChap.htmlContent || '',
+              styleTokens: activeChap.styleTokens || null,
+              rawHtml: activeChap.rawHtml || activeChap.htmlContent || '',
+              updatedAt: Date.now()
+            }));
+          } catch (e) {}
+        }
         this.repaginate();
       });
 
@@ -3426,6 +5409,8 @@
           this.redo();
         }
       });
+
+      this.repaginate();
     }
 
     _syncUIFromConfig(config) {
@@ -3514,7 +5499,17 @@
       const selTOCPos = document.getElementById('sel-toc-position');
       if (selTOCPos && config.tocPosition) selTOCPos.value = config.tocPosition;
 
-      // QR & Media Mode
+      // QR & Media Mode & Hyperlinks
+      const chkHideLinks = document.getElementById('chk-hide-links');
+      if (chkHideLinks && config.hideLinks !== undefined) chkHideLinks.checked = !!config.hideLinks;
+
+      const chkHideLinksTab3 = document.getElementById('chk-hide-links-tab3');
+      if (chkHideLinksTab3 && config.hideLinks !== undefined) chkHideLinksTab3.checked = !!config.hideLinks;
+
+      if (config.hideLinks !== undefined) {
+        document.body.setAttribute('data-hide-links', config.hideLinks ? 'true' : 'false');
+      }
+
       const chkQR = document.getElementById('chk-enable-qr');
       if (chkQR && config.enableQRFootnotes !== undefined) chkQR.checked = !!config.enableQRFootnotes;
 
@@ -3524,21 +5519,12 @@
         document.body.setAttribute('data-media-mode', config.mediaMode);
       }
 
-      // Themes & Fonts
+      // Themes & Typography
       if (config.theme) {
         document.body.setAttribute('data-theme', config.theme);
         const selTheme = document.getElementById('sel-preset-template');
         if (selTheme) selTheme.value = config.theme;
-      }
-      if (config.font) {
-        document.body.setAttribute('data-font', config.font);
-        const selFont = document.getElementById('sel-font-family');
-        if (selFont) selFont.value = config.font;
-      }
-      if (config.brandColor) {
-        document.documentElement.style.setProperty('--doc-primary', config.brandColor);
-        const inputBrand = document.getElementById('input-brand-color');
-        if (inputBrand) inputBrand.value = config.brandColor;
+        this._syncMicrotypographyUI(config.theme, false);
       }
     }
 
@@ -3723,6 +5709,24 @@
         this._saveCurrentProject();
       });
 
+      document.getElementById('btn-open-inspector-top')?.addEventListener('click', () => {
+        const activeChap = this.chapterManager.getActiveChapter();
+        if (activeChap) {
+          try {
+            localStorage.setItem('urlprint_inspector_transfer', JSON.stringify({
+              title: activeChap.title || '',
+              sourceUrl: activeChap.sourceUrl || '',
+              htmlContent: activeChap.htmlContent || '',
+              styleTokens: activeChap.styleTokens || null,
+              rawHtml: activeChap.rawHtml || activeChap.htmlContent || '',
+              updatedAt: Date.now()
+            }));
+          } catch (e) {
+            console.warn('Nelze uložit data pro inspektor:', e);
+          }
+        }
+      });
+
       document.getElementById('btn-undo')?.addEventListener('click', () => this.undo());
       document.getElementById('btn-redo')?.addEventListener('click', () => this.redo());
 
@@ -3736,8 +5740,30 @@
         if (inputZ) inputZ.value = this.currentZoom;
       };
 
+      const fitToWindow = () => {
+        const viewport = document.getElementById('sheet-viewport');
+        const firstSheet = document.querySelector('.paper-sheet');
+        if (!viewport || !firstSheet) return;
+
+        const isSpread = viewport.classList.contains('spread-mode');
+        const availWidth = viewport.clientWidth - 40;
+        const availHeight = viewport.clientHeight - 40;
+        if (availWidth <= 0 || availHeight <= 0) return;
+
+        const sheetWidth = firstSheet.offsetWidth || 794;
+        const sheetHeight = firstSheet.offsetHeight || 1123;
+        const totalWidth = isSpread ? (sheetWidth * 2 + 30) : sheetWidth;
+
+        const scaleX = availWidth / totalWidth;
+        const scaleY = availHeight / sheetHeight;
+        const bestScale = Math.min(scaleX, scaleY);
+        const calculatedZoom = Math.max(25, Math.min(300, Math.floor(bestScale * 100)));
+        applyZoom(calculatedZoom);
+      };
+
       document.getElementById('btn-zoom-out')?.addEventListener('click', () => applyZoom(this.currentZoom - 10));
       document.getElementById('btn-zoom-in')?.addEventListener('click', () => applyZoom(this.currentZoom + 10));
+      document.getElementById('btn-zoom-fit')?.addEventListener('click', fitToWindow);
       document.getElementById('input-zoom-val')?.addEventListener('change', (e) => applyZoom(parseInt(e.target.value, 10) || 100));
 
       const jumpToPage = (pageNum) => {
@@ -3914,7 +5940,26 @@
         this.repaginate();
       });
 
-      // QR & Media Mode Controls
+      // Hyperlinks & QR Mode Controls
+      const onHideLinksToggle = (checked) => {
+        const c1 = document.getElementById('chk-hide-links');
+        const c2 = document.getElementById('chk-hide-links-tab3');
+        if (c1 && c1.checked !== checked) c1.checked = checked;
+        if (c2 && c2.checked !== checked) c2.checked = checked;
+        try {
+          localStorage.setItem('url_printer_hide_links', checked ? 'true' : 'false');
+        } catch (err) {}
+        this.paginationEngine.updateConfig({ hideLinks: checked });
+      };
+
+      document.getElementById('chk-hide-links')?.addEventListener('change', (e) => {
+        onHideLinksToggle(e.target.checked);
+      });
+
+      document.getElementById('chk-hide-links-tab3')?.addEventListener('change', (e) => {
+        onHideLinksToggle(e.target.checked);
+      });
+
       document.getElementById('chk-enable-qr')?.addEventListener('change', (e) => {
         this.paginationEngine.updateConfig({ enableQRFootnotes: e.target.checked });
         this.repaginate();
@@ -3928,14 +5973,69 @@
       });
 
       // Themes & Typography Controls
+      const presetFontMap = {
+        'vintage-broadsheet': ['Playfair Display', 'EB Garamond', 'Barlow Condensed'],
+        'gazette-1920': ['Cinzel', 'Libre Baskerville', 'Cormorant Garamond'],
+        'yellowed-press': ['Barlow Condensed', 'Newsreader', 'IBM Plex Mono'],
+        'magazine-editorial': ['Playfair Display', 'Newsreader', 'Plus Jakarta Sans'],
+        'magazine-fashion': ['Cormorant Garamond', 'Plus Jakarta Sans'],
+        'magazine-tech': ['Space Grotesk', 'Inter', 'IBM Plex Mono'],
+        'kids-comic': ['Fredoka', 'Nunito'],
+        'kids-adventure': ['Fredoka', 'Nunito'],
+        'kids-explorer': ['Fredoka', 'Plus Jakarta Sans'],
+        'antique-manuscript': ['Cinzel', 'Cormorant Garamond'],
+        'antique-victorian': ['Playfair Display', 'EB Garamond'],
+        'antique-press': ['Libre Baskerville', 'EB Garamond'],
+        'kids-storybook': ['Fredoka', 'Nunito'],
+        'kids-easy-reader': ['Nunito', 'Plus Jakarta Sans'],
+        'kids-fairytale': ['Cormorant Garamond', 'Nunito'],
+        'book-modern-novel': ['Cormorant Garamond', 'Newsreader'],
+        'book-nordic-minimal': ['Space Grotesk', 'Plus Jakarta Sans'],
+        'book-paperback': ['Libre Baskerville', 'Lora'],
+        'design-swiss-grid': ['Barlow Condensed', 'Inter', 'IBM Plex Mono'],
+        'design-brutalist-tech': ['Space Grotesk', 'IBM Plex Mono'],
+        'design-studio-annual': ['Space Grotesk', 'Plus Jakarta Sans'],
+        'minimal-bauhaus': ['Space Grotesk', 'Inter'],
+        'minimal-zen': ['Cormorant Garamond', 'Newsreader'],
+        'minimal-grid': ['IBM Plex Mono', 'Inter'],
+        'blog-ghost-clean': ['Newsreader', 'Plus Jakarta Sans'],
+        'blog-dev-digest': ['Space Grotesk', 'Inter', 'IBM Plex Mono'],
+        'blog-substack-editorial': ['Playfair Display', 'Lora'],
+        'textbook-stem-script': ['Space Grotesk', 'Inter', 'IBM Plex Mono'],
+        'textbook-university': ['Libre Baskerville', 'Merriweather'],
+        'textbook-medical': ['Barlow Condensed', 'Plus Jakarta Sans'],
+        'fun-textbook-science': ['Fredoka', 'Plus Jakarta Sans'],
+        'fun-textbook-companion': ['Space Grotesk', 'Nunito'],
+        'fun-textbook-workbook': ['Outfit', 'Plus Jakarta Sans'],
+        'bulletin-executive-brief': ['Barlow Condensed', 'Inter'],
+        'bulletin-market-dispatch': ['Playfair Display', 'Newsreader', 'IBM Plex Mono'],
+        'bulletin-company-digest': ['Space Grotesk', 'Plus Jakarta Sans'],
+        'toner-saver': ['Inter', 'IBM Plex Mono'],
+        'modern-edu': ['Outfit', 'Plus Jakarta Sans'],
+        'academic': ['Libre Baskerville', 'EB Garamond'],
+        'stem-tech': ['Space Grotesk', 'Inter', 'IBM Plex Mono'],
+        'warm-notebook': ['Outfit', 'Nunito'],
+        'corporate-navy': ['Barlow Condensed', 'Plus Jakarta Sans'],
+      };
+
       document.getElementById('sel-preset-template')?.addEventListener('change', (e) => {
         const val = e.target.value;
+        const delBtn = document.getElementById('btn-delete-custom-template');
+        if (delBtn) delBtn.style.display = val.startsWith('custom-') ? 'block' : 'none';
+
+        if (presetFontMap[val]) {
+          presetFontMap[val].forEach(f => ContentExtractor._ensureGoogleFontLoaded(f));
+        }
+
+        const shouldApplyLayout = document.getElementById('chk-template-apply-layout')?.checked ?? true;
+
         if (val.startsWith('web-chap-')) {
           const chapId = val.replace('web-chap-', '');
           const targetChap = this.chapterManager.chapters.find(c => c.id === chapId);
           if (targetChap && targetChap.styleTokens) {
             this._applyStyleTokens(targetChap.styleTokens);
           }
+          this._syncMicrotypographyUI('web-original', shouldApplyLayout);
         } else if (val === 'web-original') {
           const activeChap = this.chapterManager.getActiveChapter();
           if (activeChap && activeChap.styleTokens) {
@@ -3943,28 +6043,200 @@
           } else {
             document.body.setAttribute('data-theme', 'web-original');
           }
+          this._syncMicrotypographyUI('web-original', shouldApplyLayout);
+        } else if (val.startsWith('custom-')) {
+          document.body.removeAttribute('data-font');
+          this._applyCustomTemplate(val, shouldApplyLayout);
         } else {
+          this._clearInlineStyleOverrides();
+          document.body.removeAttribute('data-font');
           document.body.setAttribute('data-theme', val);
+          this._syncMicrotypographyUI(val, shouldApplyLayout);
         }
         this.repaginate();
       });
 
-      document.getElementById('sel-font-family')?.addEventListener('change', (e) => {
-        const val = e.target.value;
-        if (val === 'web-original') {
-          const activeChap = this.chapterManager.getActiveChapter();
-          if (activeChap && activeChap.styleTokens) {
-            this._applyStyleTokens(activeChap.styleTokens);
-          }
+      document.getElementById('btn-reapply-template-layout')?.addEventListener('click', () => {
+        const sel = document.getElementById('sel-preset-template');
+        const val = sel?.value || document.body.getAttribute('data-theme') || 'web-original';
+        if (val.startsWith('custom-')) {
+          this._applyCustomTemplate(val, true);
         } else {
-          document.body.setAttribute('data-font', val);
+          const themeKey = val.startsWith('web-chap-') ? 'web-original' : val;
+          this._syncMicrotypographyUI(themeKey, true);
         }
         this.repaginate();
+        this._showToast('📐 Rozvržení strany, formát a okraje šablony byly aplikovány');
       });
 
-      document.getElementById('input-brand-color')?.addEventListener('input', (e) => {
-        document.documentElement.style.setProperty('--doc-primary', e.target.value);
+      // Custom Template Actions
+      document.getElementById('btn-save-custom-template')?.addEventListener('click', () => {
+        this._saveCurrentStyleAsTemplate();
+      });
+
+      document.getElementById('btn-save-web-as-template')?.addEventListener('click', () => {
+        this._saveWebStyleAsTemplate();
+      });
+
+      document.getElementById('btn-export-template')?.addEventListener('click', () => {
+        TemplateManager.exportTemplatesJSON();
+      });
+
+      document.getElementById('btn-import-template-trigger')?.addEventListener('click', () => {
+        document.getElementById('input-import-template')?.click();
+      });
+
+      document.getElementById('input-import-template')?.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            TemplateManager.importTemplatesJSON(evt.target.result);
+            this._initCustomTemplates();
+            this._showToast('✨ Vlastní šablony byly úspěšně importovány');
+          } catch (err) {
+            alert(err.message);
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      document.getElementById('btn-delete-custom-template')?.addEventListener('click', () => {
+        this._deleteCurrentCustomTemplate();
+      });
+
+      // 1. Font Size Base Slider & Reset
+      const rSize = document.getElementById('range-font-size-base');
+      const bSize = document.getElementById('badge-font-size-base');
+      rSize?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        if (bSize) bSize.textContent = val + ' pt';
+        document.documentElement.style.setProperty('--doc-font-size-base', val + 'pt');
         this.repaginate();
+      });
+      document.getElementById('btn-reset-font-size')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-font-size-base');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rSize) rSize.value = def.fontSize;
+        if (bSize) bSize.textContent = def.fontSize + ' pt';
+        this.repaginate();
+        this._showToast('↺ Velikost písma obnovena na výchozí');
+      });
+
+      // 2. Line Height Slider & Reset
+      const rLine = document.getElementById('range-line-height');
+      const bLine = document.getElementById('badge-line-height');
+      rLine?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(2);
+        if (bLine) bLine.textContent = val;
+        document.documentElement.style.setProperty('--doc-line-height', val);
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-line-height')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-line-height');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rLine) rLine.value = def.lineHeight;
+        if (bLine) bLine.textContent = def.lineHeight.toFixed(2);
+        this.repaginate();
+        this._showToast('↺ Řádkování obnoveno na výchozí');
+      });
+
+      // 3. Letter Spacing Slider & Reset
+      const rSpace = document.getElementById('range-letter-spacing');
+      const bSpace = document.getElementById('badge-letter-spacing');
+      rSpace?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(1);
+        if (bSpace) bSpace.textContent = (val >= 0 ? '+' : '') + val + ' px';
+        document.documentElement.style.setProperty('--doc-letter-spacing', val + 'px');
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-letter-spacing')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-letter-spacing');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rSpace) rSpace.value = def.letterSpacing;
+        if (bSpace) bSpace.textContent = (def.letterSpacing >= 0 ? '+' : '') + def.letterSpacing.toFixed(1) + ' px';
+        this.repaginate();
+        this._showToast('↺ Prostrkání písma obnoveno na výchozí');
+      });
+
+      // 4. Heading Scale Slider & Reset
+      const rScale = document.getElementById('range-heading-scale');
+      const bScale = document.getElementById('badge-heading-scale');
+      rScale?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(2);
+        if (bScale) bScale.textContent = val + '×';
+        document.documentElement.style.setProperty('--doc-heading-scale', val);
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-heading-scale')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-heading-scale');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rScale) rScale.value = def.headingScale;
+        if (bScale) bScale.textContent = def.headingScale.toFixed(2) + '×';
+        this.repaginate();
+        this._showToast('↺ Měřítko nadpisů obnoveno na výchozí');
+      });
+
+      // 5. Heading Margin Top Slider & Reset
+      const rTop = document.getElementById('range-heading-margin-top');
+      const bTop = document.getElementById('badge-heading-margin-top');
+      rTop?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(1);
+        if (bTop) bTop.textContent = val + ' em';
+        document.documentElement.style.setProperty('--doc-heading-margin-top', val + 'em');
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-heading-margin-top')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-heading-margin-top');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rTop) rTop.value = def.marginTop;
+        if (bTop) bTop.textContent = def.marginTop.toFixed(1) + ' em';
+        this.repaginate();
+        this._showToast('↺ Horní odsazení nadpisů obnoveno na výchozí');
+      });
+
+      // 6. Heading Margin Bottom Slider & Reset
+      const rBot = document.getElementById('range-heading-margin-bottom');
+      const bBot = document.getElementById('badge-heading-margin-bottom');
+      rBot?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(2);
+        if (bBot) bBot.textContent = val + ' em';
+        document.documentElement.style.setProperty('--doc-heading-margin-bottom', val + 'em');
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-heading-margin-bottom')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-heading-margin-bottom');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rBot) rBot.value = def.marginBot;
+        if (bBot) bBot.textContent = def.marginBot.toFixed(2) + ' em';
+        this.repaginate();
+        this._showToast('↺ Spodní odsazení nadpisů obnoveno na výchozí');
+      });
+
+      // 7. Paragraph Margin Slider & Reset
+      const rP = document.getElementById('range-paragraph-margin');
+      const bP = document.getElementById('badge-paragraph-margin');
+      rP?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(2);
+        if (bP) bP.textContent = val + ' em';
+        document.documentElement.style.setProperty('--doc-paragraph-margin-bottom', val + 'em');
+        this.repaginate();
+      });
+      document.getElementById('btn-reset-paragraph-margin')?.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--doc-paragraph-margin-bottom');
+        const activeTheme = document.body.getAttribute('data-theme') || 'web-original';
+        const def = this._getThemeMicroDefaults(activeTheme);
+        if (rP) rP.value = def.pMargin;
+        if (bP) bP.textContent = def.pMargin.toFixed(2) + ' em';
+        this.repaginate();
+        this._showToast('↺ Odsazení odstavců obnoveno na výchozí');
       });
 
       document.getElementById('insert-separator-tile')?.addEventListener('click', () => {
@@ -4028,58 +6300,68 @@
     _applyStyleTokens(tokens) {
       if (!tokens) return;
 
-      if (tokens.brandColor) {
-        document.documentElement.style.setProperty('--doc-primary', tokens.brandColor);
-        document.documentElement.style.setProperty('--web-extracted-primary', tokens.brandColor);
-        const brandInput = document.getElementById('input-brand-color');
-        if (brandInput) brandInput.value = tokens.brandColor;
-      }
+      const setVar = (prop, val) => {
+        if (!val) return;
+        document.documentElement.style.setProperty(prop, val);
+        document.body.style.setProperty(prop, val);
+      };
+
+      const brandColor = tokens.brandColor || '#0284c7';
+      const headingColor = tokens.headingColor || brandColor;
+      const h1Color = tokens.h1Color || headingColor || brandColor;
+      const h2Color = tokens.h2Color || headingColor || brandColor;
+      const h3Color = tokens.h3Color || headingColor || brandColor;
+      const pColor = tokens.pColor || '#334155';
+
+      setVar('--doc-primary', brandColor);
+      setVar('--web-extracted-primary', brandColor);
+
+      const brandInput = document.getElementById('input-brand-color');
+      if (brandInput) brandInput.value = brandColor;
+
       if (tokens.lightBg) {
-        document.documentElement.style.setProperty('--doc-primary-light', tokens.lightBg);
-        document.documentElement.style.setProperty('--web-extracted-bg', tokens.lightBg);
+        setVar('--doc-primary-light', tokens.lightBg);
+        setVar('--web-extracted-bg', tokens.lightBg);
       }
       if (tokens.lightBorder) {
-        document.documentElement.style.setProperty('--doc-primary-border', tokens.lightBorder);
-        document.documentElement.style.setProperty('--web-extracted-border', tokens.lightBorder);
+        setVar('--doc-primary-border', tokens.lightBorder);
+        setVar('--web-extracted-border', tokens.lightBorder);
       }
       if (tokens.secondaryColor) {
-        document.documentElement.style.setProperty('--doc-secondary', tokens.secondaryColor);
-        document.documentElement.style.setProperty('--web-extracted-secondary', tokens.secondaryColor);
+        setVar('--doc-secondary', tokens.secondaryColor);
+        setVar('--web-extracted-secondary', tokens.secondaryColor);
       }
-      if (tokens.headingColor) {
-        document.documentElement.style.setProperty('--doc-headings', tokens.headingColor);
-        document.documentElement.style.setProperty('--web-extracted-heading', tokens.headingColor);
-      }
-      if (tokens.h1Color) {
-        document.documentElement.style.setProperty('--web-h1-color', tokens.h1Color);
-      }
-      if (tokens.h2Color) {
-        document.documentElement.style.setProperty('--web-h2-color', tokens.h2Color);
-      }
-      if (tokens.h3Color) {
-        document.documentElement.style.setProperty('--web-h3-color', tokens.h3Color);
-      }
-      if (tokens.pColor) {
-        document.documentElement.style.setProperty('--web-p-color', tokens.pColor);
-      }
-      if (tokens.bodyFont) {
-        const cleanFont = tokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim();
-        ContentExtractor._ensureGoogleFontLoaded(cleanFont);
-        document.documentElement.style.setProperty('--web-extracted-font', `"${cleanFont}", system-ui, sans-serif`);
-        document.documentElement.style.setProperty('--doc-font-family', `"${cleanFont}", system-ui, sans-serif`);
-      }
-      if (tokens.headingFont) {
-        const cleanHead = tokens.headingFont.split(',')[0].replace(/['"]/g, '').trim();
-        ContentExtractor._ensureGoogleFontLoaded(cleanHead);
-        if (cleanHead.toLowerCase().includes('libertine')) {
-          const serifStack = '"Linux Libertine", "Libertinus Serif", "EB Garamond", "Lora", Georgia, "Times New Roman", serif';
-          document.documentElement.style.setProperty('--web-extracted-heading-font', serifStack);
-          document.documentElement.style.setProperty('--doc-font-heading', serifStack);
-        } else {
-          document.documentElement.style.setProperty('--web-extracted-heading-font', `"${cleanHead}", system-ui, sans-serif`);
-          document.documentElement.style.setProperty('--doc-font-heading', `"${cleanHead}", system-ui, sans-serif`);
-        }
-      }
+      
+      setVar('--doc-headings', headingColor);
+      setVar('--web-extracted-heading', headingColor);
+      setVar('--web-h1-color', h1Color);
+      setVar('--web-h2-color', h2Color);
+      setVar('--web-h3-color', h3Color);
+      const h4Color = tokens.h4Color || tokens.h1Color || headingColor || brandColor;
+      setVar('--web-h4-color', h4Color);
+      setVar('--web-p-color', pColor);
+
+      const fontStack = tokens.bodyFont?.includes(',') 
+        ? tokens.bodyFont 
+        : ContentExtractor._buildFontStack(tokens.bodyFont);
+      const headStack = tokens.headingFont?.includes(',') 
+        ? tokens.headingFont 
+        : ContentExtractor._buildFontStack(tokens.headingFont || tokens.bodyFont);
+      const h4Stack = tokens.h4Font?.includes(',') 
+        ? tokens.h4Font 
+        : (tokens.h4Font ? ContentExtractor._buildFontStack(tokens.h4Font) : headStack);
+
+      setVar('--web-extracted-font', fontStack);
+      setVar('--doc-font-family', fontStack);
+      setVar('--web-extracted-heading-font', headStack);
+      setVar('--doc-font-heading', headStack);
+      setVar('--web-extracted-h4-font', h4Stack);
+      setVar('--doc-font-h4', h4Stack);
+
+      const primaryBodyName = tokens.bodyFont ? tokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : '';
+      const primaryHeadName = tokens.headingFont ? tokens.headingFont.split(',')[0].replace(/['"]/g, '').trim() : '';
+      if (primaryBodyName) ContentExtractor._ensureGoogleFontLoaded(primaryBodyName);
+      if (primaryHeadName && primaryHeadName !== primaryBodyName) ContentExtractor._ensureGoogleFontLoaded(primaryHeadName);
 
       document.body.setAttribute('data-theme', 'web-original');
       document.body.setAttribute('data-font', 'web-original');
@@ -4091,6 +6373,869 @@
 
       const fontSelect = document.getElementById('sel-font-family');
       if (fontSelect) fontSelect.value = 'web-original';
+    }
+
+    _initCustomTemplates() {
+      const group = document.getElementById('optgroup-custom-templates');
+      if (!group) return;
+      group.innerHTML = '';
+      const list = TemplateManager.getCustomTemplates();
+      list.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = `⭐ ${t.name}`;
+        group.appendChild(opt);
+      });
+    }
+
+    _applyCustomTemplate(templateId, applyLayout = true) {
+      const template = TemplateManager.getCustomTemplates().find(t => t.id === templateId);
+      if (!template || !template.cssVars) return;
+      document.body.setAttribute('data-theme', templateId);
+      Object.entries(template.cssVars).forEach(([k, v]) => {
+        document.documentElement.style.setProperty(k, v);
+        document.body.style.setProperty(k, v);
+      });
+      if (template.fonts) {
+        template.fonts.forEach(f => ContentExtractor._ensureGoogleFontLoaded(f));
+      }
+      if (applyLayout && template.layout) {
+        this.paginationEngine.updateConfig(template.layout);
+        this._syncUIFromConfig(this.paginationEngine.config);
+      }
+      this._updateTemplateSpecCard(templateId, {
+        name: `⭐ ${template.name}`,
+        format: template.layout?.format || this.paginationEngine.config.format || 'a4',
+        orientation: template.layout?.orientation || this.paginationEngine.config.orientation || 'portrait',
+        columns: template.layout?.columns || this.paginationEngine.config.columns || 1,
+        mTop: template.layout?.marginTop ?? 20,
+        mBot: template.layout?.marginBottom ?? 20,
+        mLeft: template.layout?.marginLeft ?? 20,
+        mRight: template.layout?.marginRight ?? 20,
+        mirrorMargins: !!template.layout?.mirrorMargins,
+        fontSize: parseFloat(template.cssVars['--doc-font-size-base']) || 11,
+        desc: 'Vlastní uložená uživatelská šablona včetně typografie a rozvržení strany.',
+        colors: [
+          template.cssVars['--doc-paper-bg'] || '#ffffff',
+          template.cssVars['--doc-primary'] || '#0284c7',
+          template.cssVars['--doc-headings'] || '#0f172a'
+        ]
+      });
+    }
+
+    _clearInlineStyleOverrides() {
+      const varsToClear = [
+        '--doc-primary', '--doc-primary-light', '--doc-primary-border',
+        '--doc-secondary', '--doc-accent', '--doc-headings', '--doc-text',
+        '--doc-text-muted', '--doc-bg', '--doc-paper-bg', '--doc-callout-bg',
+        '--doc-border', '--doc-line-color', '--doc-font-family', '--doc-font-heading',
+        '--doc-font-h4', '--doc-font-mono', '--doc-heading-scale', '--doc-letter-spacing',
+        '--doc-line-height', '--doc-font-size-base', '--doc-heading-margin-top',
+        '--doc-heading-margin-bottom', '--doc-paragraph-margin-bottom',
+        '--web-extracted-primary', '--web-extracted-heading', '--web-extracted-font',
+        '--web-extracted-heading-font', '--web-extracted-bg', '--web-extracted-border',
+        '--web-extracted-secondary', '--web-extracted-text', '--web-h1-color',
+        '--web-h2-color', '--web-h3-color', '--web-h4-color', '--web-p-color'
+      ];
+      varsToClear.forEach(v => {
+        document.documentElement.style.removeProperty(v);
+        document.body.style.removeProperty(v);
+      });
+    }
+
+    _getThemeMicroDefaults(themeName) {
+      const map = {
+        'web-original': {
+          name: '🌐 Původní styl z webu',
+          desc: 'Zachovává extrahovanou barevnou paletu a typografii původního článku na standardním listu A4.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 20, mBot: 20, mLeft: 20, mRight: 20, mirrorMargins: false, ebookMode: false,
+          fontSize: 11, lineHeight: 1.55, letterSpacing: 0, headingScale: 1.25, marginTop: 1.2, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'none', imgShadow: 'soft', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#0284c7', '#0f172a']
+        },
+
+        // 1. STARÉ NOVINY (3 šablony)
+        'vintage-broadsheet': {
+          name: '🗞️ Dobový deník (Broadsheet 1900)',
+          desc: 'Hustá třísloupcová novinová sazba na A4 s úzkými 10mm okraji, dvojitými linkami, iniciálou a ostře oříznutými fotografiemi.',
+          format: 'a4', orientation: 'portrait', columns: 3,
+          mTop: 10, mBot: 10, mLeft: 10, mRight: 10, mirrorMargins: false, ebookMode: true,
+          fontSize: 9.5, lineHeight: 1.42, letterSpacing: -0.2, headingScale: 1.45, marginTop: 1.0, marginBot: 0.35, pMargin: 0.55,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'short',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'grayscale',
+          colors: ['#f4efe4', '#7f1d1d', '#18130f']
+        },
+        'gazette-1920': {
+          name: '🎩 Prvorepubliková Gazeta (1920)',
+          desc: 'Slavnostní třísloupcová gazeta A4 NA ŠÍŘKU s dekorativním dvojitým rámečkem, římským číslováním a patkovým písmem Cinzel.',
+          format: 'a4', orientation: 'landscape', columns: 3,
+          mTop: 14, mBot: 14, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: true,
+          fontSize: 10, lineHeight: 1.48, letterSpacing: 0.2, headingScale: 1.42, marginTop: 1.15, marginBot: 0.4, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'roman',
+          imgRadius: 'sharp', imgBorder: 'frame', imgShadow: 'none', imgBg: 'card', mediaMode: 'grayscale',
+          colors: ['#f6f2e9', '#451a03', '#1c1917']
+        },
+        'yellowed-press': {
+          name: '📜 Dobový Večerník / Tabloid',
+          desc: 'Kompaktní večerník A5 s 2 sloupci, inverzními titulkovými pásky, razítkovými boxy a tučnou kondenzovanou typografií.',
+          format: 'a5', orientation: 'portrait', columns: 2,
+          mTop: 12, mBot: 12, mLeft: 10, mRight: 10, mirrorMargins: false, ebookMode: true,
+          fontSize: 9.8, lineHeight: 1.44, letterSpacing: 0, headingScale: 1.48, marginTop: 1.0, marginBot: 0.35, pMargin: 0.6,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#efe5ce', '#991b1b', '#1c1610']
+        },
+
+        // 2. MODERNÍ ČASOPIS (3 šablony)
+        'magazine-editorial': {
+          name: '✨ New Yorker Editorial',
+          desc: 'Vertikální magazínová sazba A4 (2 sloupce) se zrcadlovými okraji, výraznými citacemi a rubínovou akcentní linkou.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 22, mBot: 18, mLeft: 22, mRight: 16, mirrorMargins: true, ebookMode: true,
+          fontSize: 10.5, lineHeight: 1.56, letterSpacing: 0, headingScale: 1.52, marginTop: 1.25, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'hard', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#e11d48', '#09090b']
+        },
+        'magazine-fashion': {
+          name: '🥂 Vogue Lookbook',
+          desc: 'Luxusní módní sazba A4 NA ŠÍŘKU (2 sloupce) s polaroidovými rámečky a vysokokontrastním písmem.',
+          format: 'a4', orientation: 'landscape', columns: 2,
+          mTop: 20, mBot: 18, mLeft: 24, mRight: 24, mirrorMargins: false, ebookMode: true,
+          fontSize: 11.5, lineHeight: 1.72, letterSpacing: 0.2, headingScale: 1.55, marginTop: 1.5, marginBot: 0.5, pMargin: 0.95,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'roman',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#faf8f5', '#a16207', '#0c0a09']
+        },
+        'magazine-tech': {
+          name: '⚡ Wired Tech Quarterly',
+          desc: 'Americký časopisecký formát US Letter s dynamickou třísloupcovou mřížkou, zkosenými cyberpunkovými štítky H2 a neonovými akcenty.',
+          format: 'letter', orientation: 'portrait', columns: 3,
+          mTop: 14, mBot: 14, mLeft: 12, mRight: 12, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.5, lineHeight: 1.46, letterSpacing: -0.1, headingScale: 1.38, marginTop: 1.1, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'soft', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#4f46e5', '#06b6d4']
+        },
+
+        // 3. DĚTSKÝ ČASOPIS (3 šablony)
+        'kids-comic': {
+          name: '🎈 Veselý Komiks & Kvízy',
+          desc: 'Hravý komiksový dvouměsíčník A4 NA ŠÍŘKU (2 sloupce) s tvrdými stíny, tečkovanými rámečky a zaoblenými bublinami.',
+          format: 'a4', orientation: 'landscape', columns: 2,
+          mTop: 15, mBot: 15, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 11.5, lineHeight: 1.6, letterSpacing: 0.2, headingScale: 1.4, marginTop: 1.15, marginBot: 0.45, pMargin: 0.85,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'rounded', imgBorder: 'comic', imgShadow: 'hard', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#fffef7', '#f97316', '#0284c7']
+        },
+        'kids-adventure': {
+          name: '🦖 Dobrodružná Výprava',
+          desc: 'Expediční atlas A4 (2 sloupce) s mapovou sazbou, expedičními cedulkami a zeleným rámováním listu.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 16, mBot: 16, mLeft: 16, mRight: 16, mirrorMargins: false, ebookMode: false,
+          fontSize: 11.5, lineHeight: 1.62, letterSpacing: 0.1, headingScale: 1.36, marginTop: 1.2, marginBot: 0.45, pMargin: 0.85,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#f7fee7', '#15803d', '#b45309']
+        },
+        'kids-explorer': {
+          name: '🚀 Kapesní Zápisník Badatele',
+          desc: 'Příruční badatelský sešit A5 (1 sloupec) s terénními kartami a kroužkovanými vědeckými boxy.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 14, mBot: 14, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 11.5, lineHeight: 1.65, letterSpacing: 0, headingScale: 1.34, marginTop: 1.2, marginBot: 0.45, pMargin: 0.85,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#f8fafc', '#0284c7', '#7c3aed']
+        },
+
+        // 4. STARÁ KNIHA (3 šablony)
+        'antique-manuscript': {
+          name: '🕯️ Iluminovaný Středověký Kodex',
+          desc: 'Rukopisný kodex A4 (2 sloupce) s monumentálními asymetrickými okraji pro glosy, dvojitým rámem a rubrikovou iniciálou.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 22, mBot: 26, mLeft: 22, mRight: 22, mirrorMargins: true, ebookMode: true,
+          fontSize: 12, lineHeight: 1.68, letterSpacing: 0.1, headingScale: 1.38, marginTop: 1.4, marginBot: 0.5, pMargin: 0.55,
+          diffOddEven: true, includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'roman',
+          imgRadius: 'sharp', imgBorder: 'frame', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#f5ebd6', '#7f1d1d', '#92400e']
+        },
+        'antique-victorian': {
+          name: '🏛️ Viktoriánský Román',
+          desc: 'Klasický románový formát A5 (1 sloupec) se zrcadlovou knižní vazbou, centrovanými kapitolami a 1.5em odstavci.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 22, mLeft: 22, mRight: 14, mirrorMargins: true, ebookMode: true,
+          fontSize: 11, lineHeight: 1.62, letterSpacing: 0, headingScale: 1.32, marginTop: 1.35, marginBot: 0.5, pMargin: 0.45,
+          diffOddEven: true, includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'roman',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#f7f3eb', '#57534e', '#1c1917']
+        },
+        'antique-press': {
+          name: '✒️ První Knižní Vydání',
+          desc: 'Knižní formát B5 (176 × 250 mm) s čistou knihtiskovou sazbou Libre Baskerville bez rušivého záhlaví.',
+          format: 'b5', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 22, mLeft: 24, mRight: 16, mirrorMargins: true, ebookMode: true,
+          diffOddEven: true, includeHeader: false, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          fontSize: 10.5, lineHeight: 1.58, letterSpacing: 0, headingScale: 1.26, marginTop: 1.25, marginBot: 0.4, pMargin: 0.35,
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'grayscale',
+          colors: ['#faf8f5', '#292524', '#0c0a09']
+        },
+
+        // 5. DĚTSKÁ KNIHA (3 šablony)
+        'kids-storybook': {
+          name: '🧸 Obrázková Pohádka',
+          desc: 'Pohádkové album A5 NA ŠÍŘKU (1 sloupec) s hřejivým krémovým papírem, velkým písmem Nunito a dekorativním rámečkem.',
+          format: 'a5', orientation: 'landscape', columns: 1,
+          mTop: 16, mBot: 16, mLeft: 18, mRight: 18, mirrorMargins: false, ebookMode: true,
+          fontSize: 12.5, lineHeight: 1.72, letterSpacing: 0.1, headingScale: 1.35, marginTop: 1.3, marginBot: 0.55, pMargin: 0.9,
+          includeHeader: false, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#fffbeb', '#d97706', '#dc2626']
+        },
+        'kids-easy-reader': {
+          name: '🔤 První Čtení / Slabikář',
+          desc: 'Ergonomická sazba pro začínající čtenáře a dyslektiky: 14pt bezpatkové písmo, široké rozestupy, řádkování 1.88 a 26mm okraje.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 24, mBot: 24, mLeft: 26, mRight: 26, mirrorMargins: false, ebookMode: false,
+          fontSize: 14, lineHeight: 1.88, letterSpacing: 0.4, headingScale: 1.28, marginTop: 1.3, marginBot: 0.6, pMargin: 1.05,
+          includeHeader: false, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#059669', '#0f172a']
+        },
+        'kids-fairytale': {
+          name: '🏰 Zlatá Kniha Pohádek',
+          desc: 'Zlatá pohádková kniha formátu B5 (1 sloupec) s dvojitým zlatofialovým rámem kolem strany a velkým písmem.',
+          format: 'b5', orientation: 'portrait', columns: 1,
+          mTop: 22, mBot: 22, mLeft: 22, mRight: 22, mirrorMargins: false, ebookMode: true,
+          fontSize: 11.5, lineHeight: 1.68, letterSpacing: 0.1, headingScale: 1.38, marginTop: 1.25, marginBot: 0.5, pMargin: 0.8,
+          includeHeader: false, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'roman',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#fdf8f6', '#9333ea', '#ca8a04']
+        },
+
+        // 6. MODERNÍ KNIHA (3 šablony)
+        'book-modern-novel': {
+          name: '📖 Současný Román',
+          desc: 'Autentická beletristická sazba A5 (1 sloupec) se zrcadlovým hřbetem Tschichold (22 mm vnitřní / 14 mm vnější), tichým záhlavím a knižní iniciálou.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 22, mLeft: 22, mRight: 14, mirrorMargins: true, ebookMode: true,
+          fontSize: 11, lineHeight: 1.62, letterSpacing: 0, headingScale: 1.3, marginTop: 1.4, marginBot: 0.45, pMargin: 0.35,
+          diffOddEven: true, includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#fdfcf9', '#b45309', '#18181b']
+        },
+        'book-nordic-minimal': {
+          name: '❄️ Severská Monografie',
+          desc: 'Vzdušná skandinávská knižní úprava na formátu B5 s asymetrickým 36mm vnějším okrajem pro poznámky a březově modrými akcenty.',
+          format: 'b5', orientation: 'portrait', columns: 1,
+          mTop: 24, mBot: 24, mLeft: 20, mRight: 36, mirrorMargins: true, ebookMode: false,
+          fontSize: 10.5, lineHeight: 1.65, letterSpacing: -0.1, headingScale: 1.28, marginTop: 1.35, marginBot: 0.45, pMargin: 0.8,
+          diffOddEven: true, includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#0284c7', '#0f172a']
+        },
+        'book-paperback': {
+          name: '📕 Cestovní Paperback',
+          desc: 'Úsporné kapesní vydání A5 (148 × 210 mm) s 11mm vnějším a 15mm vnitřním vazebním okrajem.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 13, mBot: 15, mLeft: 15, mRight: 11, mirrorMargins: true, ebookMode: true,
+          fontSize: 9.8, lineHeight: 1.52, letterSpacing: 0, headingScale: 1.24, marginTop: 1.2, marginBot: 0.38, pMargin: 0.35,
+          diffOddEven: true, includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#fafaf9', '#dc2626', '#1c1917']
+        },
+
+        // 7. DESIGNOVÝ DOKUMENT (3 šablony)
+        'design-swiss-grid': {
+          name: '🇨🇭 Švýcarský Grid Müller-Brockmann',
+          desc: 'Mezinárodní typografický styl: dvousloupcový rastr s 26mm horním okrajem, červeným pruhem a černými konstrukčními linkami.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 26, mBot: 12, mLeft: 10, mRight: 10, mirrorMargins: false, ebookMode: false,
+          fontSize: 10, lineHeight: 1.44, letterSpacing: -0.3, headingScale: 1.55, marginTop: 1.1, marginBot: 0.35, pMargin: 0.7,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#dc2626', '#000000']
+        },
+        'design-brutalist-tech': {
+          name: '🧱 Architektonický Brutalismus',
+          desc: 'Brutalistní dokument s černým rámem kolem strany, posunutými stíny, neony a neproporcionálním písmem.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 16, mBot: 16, mLeft: 16, mRight: 16, mirrorMargins: false, ebookMode: false,
+          fontSize: 10, lineHeight: 1.52, letterSpacing: 0, headingScale: 1.32, marginTop: 1.2, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'brutalist', imgShadow: 'hard', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#f4f4f0', '#ff3e00', '#a3e635']
+        },
+        'design-studio-annual': {
+          name: '🎨 Kreativní Portfolio & Report',
+          desc: 'Prezentační portfolio A4 NA ŠÍŘKU (2 sloupce) s barevným levým pruhem a 26mm levým okrajem.',
+          format: 'a4', orientation: 'landscape', columns: 2,
+          mTop: 18, mBot: 18, mLeft: 26, mRight: 18, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.5, lineHeight: 1.55, letterSpacing: -0.1, headingScale: 1.42, marginTop: 1.2, marginBot: 0.4, pMargin: 0.75,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'none', imgShadow: 'soft', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#7c3aed', '#ec4899']
+        },
+
+        // 8. MINIMALISTICKÁ TYPOGRAFIE (3 šablony)
+        'minimal-bauhaus': {
+          name: '📐 Bauhaus Geometrie',
+          desc: 'Konstruktivistická kompozice na A4 (1 sloupec) s 34mm levým okrajem, trikolórou a geometrickými štítky.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 22, mBot: 20, mLeft: 34, mRight: 16, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.8, lineHeight: 1.56, letterSpacing: -0.1, headingScale: 1.38, marginTop: 1.25, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#faf8f5', '#e11d48', '#1d4ed8']
+        },
+        'minimal-zen': {
+          name: '🍵 Japonský Zen Wabi-Sabi',
+          desc: 'Kontemplativní sazba A5 (1 sloupec) s 25mm vzdušnými okraji, bez rušivého záhlaví a s jemnou patkovou typografií.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 25, mBot: 25, mLeft: 25, mRight: 25, mirrorMargins: false, ebookMode: false,
+          fontSize: 11.5, lineHeight: 1.8, letterSpacing: 0.2, headingScale: 1.22, marginTop: 1.6, marginBot: 0.55, pMargin: 1.0,
+          includeHeader: false, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#fcfbf9', '#57534e', '#292524']
+        },
+        'minimal-grid': {
+          name: '📏 Braun / Rams Mikromanuál',
+          desc: 'Technický manuál A5 NA ŠÍŘKU (2 sloupce) s přesnými 12mm okraji a jemnou rýsovací mřížkou.',
+          format: 'a5', orientation: 'landscape', columns: 2,
+          mTop: 12, mBot: 12, mLeft: 12, mRight: 12, mirrorMargins: false, ebookMode: false,
+          fontSize: 10, lineHeight: 1.5, letterSpacing: 0, headingScale: 1.26, marginTop: 1.15, marginBot: 0.4, pMargin: 0.7,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'prefix',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0284c7', '#0f172a']
+        },
+
+        // 9. WEBOVÝ BLOG (3 šablony)
+        'blog-ghost-clean': {
+          name: '👻 Clean Longform Essay',
+          desc: 'Čistá esejistická sazba A4 (1 sloupec) s komfortní šířkou řádku a 28mm čtecími okraji.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 22, mBot: 22, mLeft: 28, mRight: 28, mirrorMargins: false, ebookMode: false,
+          fontSize: 11.5, lineHeight: 1.65, letterSpacing: 0, headingScale: 1.36, marginTop: 1.3, marginBot: 0.45, pMargin: 0.85,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'none', imgShadow: 'soft', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#2563eb', '#18181b']
+        },
+        'blog-dev-digest': {
+          name: '💻 Developer Docs & Markdown',
+          desc: 'Vývojářská dokumentace A4 (1 sloupec) s Markdown ## prefixy a terminálovými bloky kódu.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 16, mBot: 16, mLeft: 18, mRight: 18, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.2, lineHeight: 1.54, letterSpacing: 0, headingScale: 1.3, marginTop: 1.2, marginBot: 0.4, pMargin: 0.75,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0969da', '#1f2328']
+        },
+        'blog-substack-editorial': {
+          name: '✉️ Substack Newsletter',
+          desc: 'Osobní komentářový newsletter US Letter (1 sloupec) s oranžovým perexem a výraznou iniciálou.',
+          format: 'letter', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 18, mLeft: 20, mRight: 20, mirrorMargins: false, ebookMode: true,
+          fontSize: 11.2, lineHeight: 1.62, letterSpacing: 0, headingScale: 1.38, marginTop: 1.3, marginBot: 0.45, pMargin: 0.85,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'simple',
+          imgRadius: 'rounded', imgBorder: 'none', imgShadow: 'soft', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#fffdfa', '#ea580c', '#1c1917']
+        },
+
+        // 10. MODERNÍ UČEBNICE (3 šablony)
+        'textbook-stem-script': {
+          name: '🧮 Vysokoškolská STEM Skripta',
+          desc: 'Dvousloupcová skripta A4 s 14mm okraji, modrými štítky kapitol a rámovanými definicemi.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 16, mBot: 16, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 10, lineHeight: 1.48, letterSpacing: 0, headingScale: 1.26, marginTop: 1.15, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right-odd-left-even', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0369a1', '#0f172a']
+        },
+        'textbook-university': {
+          name: '🎓 Oxford / Tufte Kompendium',
+          desc: 'Učebnicová sazba A4 (1 sloupec) s vytištěným 38mm pravým studijním okrajem pro poznámky.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 20, mBot: 20, mLeft: 18, mRight: 38, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.8, lineHeight: 1.58, letterSpacing: 0, headingScale: 1.32, marginTop: 1.25, marginBot: 0.45, pMargin: 0.78,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'prefix',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#1e3a8a', '#b45309']
+        },
+        'textbook-medical': {
+          name: '🩺 Klinická & Lékařská Skripta',
+          desc: 'Klinická skripta A4 (2 sloupce) s tyrkysovým záhlavím a strukturovanými tabulkami.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 15, mBot: 15, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.8, lineHeight: 1.46, letterSpacing: 0, headingScale: 1.28, marginTop: 1.1, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0d9488', '#e11d48']
+        },
+
+        // 11. ZÁBAVNÁ UČEBNICE (3 šablony)
+        'fun-textbook-science': {
+          name: '🧪 Hravá Věda & Laboratoř',
+          desc: 'Laboratorní příručka A4 (2 sloupce) s odznaky nadpisů, tečkovanými kartami a boxy pro pokusy.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 18, mBot: 18, mLeft: 16, mRight: 16, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.5, lineHeight: 1.55, letterSpacing: 0, headingScale: 1.32, marginTop: 1.2, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#7c3aed', '#10b981']
+        },
+        'fun-textbook-companion': {
+          name: '🧭 Třísloupcový Studijní Tahák',
+          desc: 'Hustý studijní přehled A4 NA ŠÍŘKU se 3 sloupci a 12mm okraji pro přehled klíčových pojmů.',
+          format: 'a4', orientation: 'landscape', columns: 3,
+          mTop: 14, mBot: 14, mLeft: 12, mRight: 12, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.8, lineHeight: 1.48, letterSpacing: 0, headingScale: 1.24, marginTop: 1.1, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-center', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0284c7', '#f59e0b']
+        },
+        'fun-textbook-workbook': {
+          name: '✏️ Cornellův Pracovní Sešit',
+          desc: 'Pracovní list A4 (1 sloupec) se 45mm pravým linkovaným sloupkem Cornell Notes na každé straně.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 20, mLeft: 16, mRight: 45, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.8, lineHeight: 1.6, letterSpacing: 0, headingScale: 1.28, marginTop: 1.2, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-left', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#ea580c', '#0284c7']
+        },
+
+        // 12. STRHUJÍCÍ BULLETIN (3 šablony)
+        'bulletin-executive-brief': {
+          name: '📊 Krizový Flash Briefing',
+          desc: 'Manažerský informační svod se 3 sloupci na A4, 10mm okraji a vysokou informační hustotou.',
+          format: 'a4', orientation: 'portrait', columns: 3,
+          mTop: 11, mBot: 11, mLeft: 10, mRight: 10, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.2, lineHeight: 1.42, letterSpacing: 0, headingScale: 1.3, marginTop: 1.0, marginBot: 0.35, pMargin: 0.55,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'prefix',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0f172a', '#0284c7']
+        },
+        'bulletin-market-dispatch': {
+          name: '📈 Financial Times Tržní Svodka',
+          desc: 'Tržní svodka A4 NA ŠÍŘKU (3 sloupce) na lososovém podkladu Financial Times s datovými tabulkami.',
+          format: 'a4', orientation: 'landscape', columns: 3,
+          mTop: 14, mBot: 14, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: true,
+          fontSize: 10, lineHeight: 1.48, letterSpacing: 0, headingScale: 1.35, marginTop: 1.1, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#fff1e5', '#990f3d', '#1c1917']
+        },
+        'bulletin-company-digest': {
+          name: '🏢 Firemní Magazín & Zpravodaj',
+          desc: 'Dvousloupcový firemní zpravodaj A4 se smaragdovými akcenty a zaoblenými boxy.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 15, mBot: 15, mLeft: 15, mRight: 15, mirrorMargins: false, ebookMode: false,
+          fontSize: 10, lineHeight: 1.5, letterSpacing: 0, headingScale: 1.32, marginTop: 1.1, marginBot: 0.38, pMargin: 0.65,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#059669', '#0f172a']
+        },
+
+        // 13. KLASICKÉ A ÚSPORNÉ ŠABLONY (6 šablon)
+        'toner-saver': {
+          name: '🌱 Eko B&W Minimum Papíru',
+          desc: 'Extrémně úsporný tisk: 2 sloupce na A4, 8mm okraje, nulové barevné výplně a kompaktní písmo.',
+          format: 'a4', orientation: 'portrait', columns: 2,
+          mTop: 10, mBot: 10, mLeft: 8, mRight: 8, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.5, lineHeight: 1.38, letterSpacing: 0, headingScale: 1.18, marginTop: 0.9, marginBot: 0.3, pMargin: 0.5,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'none', mediaMode: 'toner-save',
+          colors: ['#ffffff', '#222222', '#000000']
+        },
+        'modern-edu': {
+          name: '🎓 Školní List do Šanonu',
+          desc: 'Výukový list A4 s 24mm levým okrajem se značkami děrovačky pro založení do šanonu.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 18, mBot: 18, mLeft: 24, mRight: 16, mirrorMargins: false, ebookMode: false,
+          fontSize: 11, lineHeight: 1.55, letterSpacing: 0, headingScale: 1.28, marginTop: 1.2, marginBot: 0.45, pMargin: 0.78,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'rounded', imgBorder: 'thin', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0284c7', '#0f172a']
+        },
+        'academic': {
+          name: '🏛️ Diplomová & Akademická Práce',
+          desc: 'Formální akademická sazba A4 s 30mm levým okrajem na pevnou vazbu a tabulkami LaTeX Booktabs.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 25, mBot: 25, mLeft: 30, mRight: 20, mirrorMargins: false, ebookMode: false,
+          fontSize: 11, lineHeight: 1.65, letterSpacing: 0, headingScale: 1.28, marginTop: 1.35, marginBot: 0.45, pMargin: 0.75,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'none', imgShadow: 'none', imgBg: 'none', mediaMode: 'normal',
+          colors: ['#ffffff', '#1e293b', '#0f172a']
+        },
+        'stem-tech': {
+          name: '💻 Inženýrský Technický Arch',
+          desc: 'Inženýrský arch A4 NA ŠÍŘKU se 2 sloupci, blokovým zarovnáním a technickými tabulkami.',
+          format: 'a4', orientation: 'landscape', columns: 2,
+          mTop: 14, mBot: 14, mLeft: 14, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 9.8, lineHeight: 1.45, letterSpacing: 0, headingScale: 1.22, marginTop: 1.1, marginBot: 0.35, pMargin: 0.6,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'header-right-odd-left-even', pageNumFormat: 'simple',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#0f766e', '#0f172a']
+        },
+        'warm-notebook': {
+          name: '☕ Linkovaný Zápisník Moleskine',
+          desc: 'Kapesní studijní zápisník A5 (1 sloupec) s krémovým linkovaným papírem a červenou linkou na marginálie.',
+          format: 'a5', orientation: 'portrait', columns: 1,
+          mTop: 16, mBot: 16, mLeft: 20, mRight: 14, mirrorMargins: false, ebookMode: false,
+          fontSize: 11, lineHeight: 1.65, letterSpacing: 0, headingScale: 1.28, marginTop: 1.25, marginBot: 0.45, pMargin: 0.8,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'simple',
+          imgRadius: 'rounded', imgBorder: 'frame', imgShadow: 'soft', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#fbf8f1', '#b45309', '#292524']
+        },
+        'corporate-navy': {
+          name: '🏢 Manažerský Board Report',
+          desc: 'Reprezentativní manažerská zpráva A4 (1 sloupec) s 25mm levým okrajem, tmavě modrým bannerem a tabulkami.',
+          format: 'a4', orientation: 'portrait', columns: 1,
+          mTop: 20, mBot: 18, mLeft: 25, mRight: 18, mirrorMargins: false, ebookMode: false,
+          fontSize: 10.2, lineHeight: 1.5, letterSpacing: 0, headingScale: 1.34, marginTop: 1.15, marginBot: 0.4, pMargin: 0.7,
+          includeHeader: true, includeFooter: true, pageNumPosition: 'footer-right', pageNumFormat: 'prefix',
+          imgRadius: 'sharp', imgBorder: 'thin', imgShadow: 'none', imgBg: 'card', mediaMode: 'normal',
+          colors: ['#ffffff', '#1e3a8a', '#b45309']
+        }
+      };
+      return map[themeName] || map['web-original'];
+    }
+
+    _syncMicrotypographyUI(themeName, applyLayout = true) {
+      const def = this._getThemeMicroDefaults(themeName);
+
+      // Apply microtypography CSS variables directly so they take immediate effect
+      document.documentElement.style.setProperty('--doc-font-size-base', def.fontSize + 'pt');
+      document.documentElement.style.setProperty('--doc-line-height', def.lineHeight.toFixed(2));
+      document.documentElement.style.setProperty('--doc-letter-spacing', def.letterSpacing.toFixed(1) + 'px');
+      document.documentElement.style.setProperty('--doc-heading-scale', def.headingScale.toFixed(2));
+      document.documentElement.style.setProperty('--doc-heading-margin-top', def.marginTop.toFixed(1) + 'em');
+      document.documentElement.style.setProperty('--doc-heading-margin-bottom', def.marginBot.toFixed(2) + 'em');
+      document.documentElement.style.setProperty('--doc-paragraph-margin-bottom', def.pMargin.toFixed(2) + 'em');
+
+      document.body.classList.toggle('ebook-mode', !!def.ebookMode);
+
+      if (def.imgRadius) document.body.setAttribute('data-img-radius', def.imgRadius);
+      if (def.imgBorder) document.body.setAttribute('data-img-border', def.imgBorder);
+      if (def.imgShadow) document.body.setAttribute('data-img-shadow', def.imgShadow);
+      if (def.imgBg) document.body.setAttribute('data-img-bg', def.imgBg);
+
+      if (applyLayout) {
+        const format = def.format || 'a4';
+        const orientation = def.orientation || 'portrait';
+        const cols = def.columns || 1;
+        const mTop = def.mTop ?? 20;
+        const mBot = def.mBot ?? 20;
+        const mLeft = def.mLeft ?? 20;
+        const mRight = def.mRight ?? 20;
+        const mirror = !!def.mirrorMargins;
+        const diffOddEven = def.diffOddEven !== undefined ? !!def.diffOddEven : mirror;
+        const includeHeader = def.includeHeader !== undefined ? !!def.includeHeader : true;
+        const includeFooter = def.includeFooter !== undefined ? !!def.includeFooter : true;
+        const pageNumPosition = def.pageNumPosition || 'footer-right';
+        const pageNumFormat = def.pageNumFormat || 'prefix';
+        const mediaMode = def.mediaMode || 'normal';
+
+        this.paginationEngine.updateConfig({
+          format,
+          orientation,
+          columns: cols,
+          marginTop: mTop,
+          marginBottom: mBot,
+          marginLeft: mLeft,
+          marginRight: mRight,
+          mirrorMargins: mirror,
+          diffOddEven,
+          includeHeader,
+          includeFooter,
+          pageNumPosition,
+          pageNumFormat,
+          mediaMode
+        });
+
+        const selFormat = document.getElementById('sel-paper-format');
+        if (selFormat) selFormat.value = format;
+
+        const selOrient = document.getElementById('sel-orientation');
+        if (selOrient) selOrient.value = orientation;
+
+        const selCols = document.getElementById('sel-columns');
+        if (selCols) selCols.value = String(cols);
+
+        const syncMarginInput = (numId, rangeId, val) => {
+          const n = document.getElementById(numId);
+          const r = document.getElementById(rangeId);
+          if (n) n.value = val;
+          if (r) r.value = val;
+        };
+        syncMarginInput('num-margin-top', 'range-margin-top', mTop);
+        syncMarginInput('num-margin-bottom', 'range-margin-bottom', mBot);
+        syncMarginInput('num-margin-left', 'range-margin-left', mLeft);
+        syncMarginInput('num-margin-right', 'range-margin-right', mRight);
+
+        const chkMirror = document.getElementById('chk-mirror-margins');
+        if (chkMirror) chkMirror.checked = mirror;
+        const lblL = document.getElementById('lbl-margin-left');
+        const lblR = document.getElementById('lbl-margin-right');
+        if (lblL) lblL.textContent = mirror ? 'Vnitřní okraj (Vazba)' : 'Levý okraj';
+        if (lblR) lblR.textContent = mirror ? 'Vnější okraj' : 'Pravý okraj';
+
+        const chkH = document.getElementById('chk-enable-header');
+        if (chkH) chkH.checked = includeHeader;
+        const chkF = document.getElementById('chk-enable-footer');
+        if (chkF) chkF.checked = includeFooter;
+
+        const chkDiff = document.getElementById('chk-diff-odd-even');
+        const simplePanel = document.getElementById('hf-simple-mode-panel');
+        const advPanel = document.getElementById('hf-advanced-mode-panel');
+        if (chkDiff) {
+          chkDiff.checked = diffOddEven;
+          if (simplePanel) simplePanel.style.display = diffOddEven ? 'none' : 'flex';
+          if (advPanel) advPanel.style.display = diffOddEven ? 'flex' : 'none';
+        }
+
+        const selPos = document.getElementById('sel-page-num-position');
+        if (selPos) selPos.value = pageNumPosition;
+
+        const selFormatNum = document.getElementById('sel-page-num-format');
+        if (selFormatNum) selFormatNum.value = pageNumFormat;
+
+        const selMedia = document.getElementById('sel-media-mode');
+        if (selMedia) selMedia.value = mediaMode;
+        document.body.setAttribute('data-media-mode', mediaMode);
+      }
+
+      const rSize = document.getElementById('range-font-size-base');
+      const bSize = document.getElementById('badge-font-size-base');
+      if (rSize) rSize.value = def.fontSize;
+      if (bSize) bSize.textContent = def.fontSize + ' pt';
+
+      const rLine = document.getElementById('range-line-height');
+      const bLine = document.getElementById('badge-line-height');
+      if (rLine) rLine.value = def.lineHeight;
+      if (bLine) bLine.textContent = def.lineHeight.toFixed(2);
+
+      const rSpace = document.getElementById('range-letter-spacing');
+      const bSpace = document.getElementById('badge-letter-spacing');
+      if (rSpace) rSpace.value = def.letterSpacing;
+      if (bSpace) bSpace.textContent = (def.letterSpacing >= 0 ? '+' : '') + def.letterSpacing.toFixed(1) + ' px';
+
+      const rScale = document.getElementById('range-heading-scale');
+      const bScale = document.getElementById('badge-heading-scale');
+      if (rScale) rScale.value = def.headingScale;
+      if (bScale) bScale.textContent = def.headingScale.toFixed(2) + '×';
+
+      const rTop = document.getElementById('range-heading-margin-top');
+      const bTop = document.getElementById('badge-heading-margin-top');
+      if (rTop) rTop.value = def.marginTop;
+      if (bTop) bTop.textContent = def.marginTop.toFixed(1) + ' em';
+
+      const rBot = document.getElementById('range-heading-margin-bottom');
+      const bBot = document.getElementById('badge-heading-margin-bottom');
+      if (rBot) rBot.value = def.marginBot;
+      if (bBot) bBot.textContent = def.marginBot.toFixed(2) + ' em';
+
+      const rP = document.getElementById('range-paragraph-margin');
+      const bP = document.getElementById('badge-paragraph-margin');
+      if (rP) rP.value = def.pMargin;
+      if (bP) bP.textContent = def.pMargin.toFixed(2) + ' em';
+
+      this._updateTemplateSpecCard(themeName, def);
+    }
+
+    _updateTemplateSpecCard(themeName, defOverride = null) {
+      const def = defOverride || this._getThemeMicroDefaults(themeName);
+      if (!def) return;
+
+      const nameEl = document.getElementById('tpl-spec-name');
+      const formatEl = document.getElementById('tpl-spec-format');
+      const descEl = document.getElementById('tpl-spec-desc');
+      const pillsEl = document.getElementById('tpl-spec-pills');
+      const swatchesEl = document.getElementById('tpl-spec-swatches');
+
+      const formatLabels = {
+        a4: 'A4 (210×297)',
+        b5: 'B5 (176×250)',
+        a5: 'A5 (148×210)',
+        letter: 'US Letter'
+      };
+      const fmtStr = formatLabels[def.format || 'a4'] || 'A4';
+      const orientStr = def.orientation === 'landscape' ? 'Na šířku ▭' : 'Na výšku ▯';
+
+      if (nameEl) nameEl.textContent = def.name || themeName;
+      if (formatEl) formatEl.textContent = `${fmtStr} · ${orientStr}`;
+      if (descEl) descEl.textContent = def.desc || '';
+
+      if (pillsEl) {
+        const colLabel = def.columns === 3 ? '3 sloupce' : (def.columns === 2 ? '2 sloupce' : '1 sloupec');
+        const marginLabel = def.mirrorMargins
+          ? `Zrcadlové okraje (${def.mLeft}/${def.mRight} mm)`
+          : (def.mLeft !== def.mRight
+              ? `Asymetrické okraje (${def.mLeft} / ${def.mRight} mm)`
+              : `Okraje ${def.mTop}/${def.mLeft} mm`);
+        const fontLabel = `Písmo ${def.fontSize} pt`;
+        const extraPills = [];
+        if (def.ebookMode) extraPills.push('<span class="template-spec-pill highlight">✨ Iniciála</span>');
+        if (def.orientation === 'landscape') extraPills.push('<span class="template-spec-pill highlight">▭ Širokoúhlá sazba</span>');
+        if (def.format === 'b5' || def.format === 'a5') extraPills.push(`<span class="template-spec-pill highlight">📖 Knižní ${def.format.toUpperCase()}</span>`);
+
+        pillsEl.innerHTML = `
+          <span class="template-spec-pill">📰 ${colLabel}</span>
+          <span class="template-spec-pill">📐 ${marginLabel}</span>
+          <span class="template-spec-pill">🔤 ${fontLabel}</span>
+          ${extraPills.join('')}
+        `;
+      }
+
+      if (swatchesEl && Array.isArray(def.colors)) {
+        swatchesEl.innerHTML = def.colors
+          .map(c => `<span class="template-spec-swatch" style="background: ${c};" title="${c}"></span>`)
+          .join('');
+      }
+    }
+
+    _saveCurrentStyleAsTemplate() {
+      const name = prompt('Zadejte název nové šablony (např. Můj moderní magazín):');
+      if (!name || !name.trim()) return;
+
+      const rSize = document.getElementById('range-font-size-base');
+      const rLine = document.getElementById('range-line-height');
+      const rSpace = document.getElementById('range-letter-spacing');
+      const rScale = document.getElementById('range-heading-scale');
+      const rTop = document.getElementById('range-heading-margin-top');
+      const rBot = document.getElementById('range-heading-margin-bottom');
+      const rP = document.getElementById('range-paragraph-margin');
+
+      const computed = window.getComputedStyle(document.body);
+      const cssVars = {
+        '--doc-primary': computed.getPropertyValue('--doc-primary') || '#0f766e',
+        '--doc-primary-light': computed.getPropertyValue('--doc-primary-light') || '#f0fdf4',
+        '--doc-primary-border': computed.getPropertyValue('--doc-primary-border') || '#bbf7d0',
+        '--doc-secondary': computed.getPropertyValue('--doc-secondary') || '#0369a1',
+        '--doc-headings': computed.getPropertyValue('--doc-headings') || '#0f172a',
+        '--doc-text': computed.getPropertyValue('--doc-text') || '#1e293b',
+        '--doc-paper-bg': computed.getPropertyValue('--doc-paper-bg') || '#ffffff',
+        '--doc-font-family': computed.getPropertyValue('--doc-font-family') || 'Inter, sans-serif',
+        '--doc-font-heading': computed.getPropertyValue('--doc-font-heading') || 'Outfit, sans-serif',
+        '--doc-font-size-base': (rSize ? rSize.value + 'pt' : computed.getPropertyValue('--doc-font-size-base') || '11pt'),
+        '--doc-line-height': (rLine ? rLine.value : computed.getPropertyValue('--doc-line-height') || '1.55'),
+        '--doc-letter-spacing': (rSpace ? rSpace.value + 'px' : computed.getPropertyValue('--doc-letter-spacing') || '0px'),
+        '--doc-heading-scale': (rScale ? rScale.value : computed.getPropertyValue('--doc-heading-scale') || '1.25'),
+        '--doc-heading-margin-top': (rTop ? rTop.value + 'em' : computed.getPropertyValue('--doc-heading-margin-top') || '1.2em'),
+        '--doc-heading-margin-bottom': (rBot ? rBot.value + 'em' : computed.getPropertyValue('--doc-heading-margin-bottom') || '0.45em'),
+        '--doc-paragraph-margin-bottom': (rP ? rP.value + 'em' : computed.getPropertyValue('--doc-paragraph-margin-bottom') || '0.8em')
+      };
+
+      const cfg = this.paginationEngine.config;
+      const layout = {
+        format: cfg.format || 'a4',
+        orientation: cfg.orientation || 'portrait',
+        columns: cfg.columns || 1,
+        marginTop: cfg.marginTop ?? 20,
+        marginBottom: cfg.marginBottom ?? 20,
+        marginLeft: cfg.marginLeft ?? 20,
+        marginRight: cfg.marginRight ?? 20,
+        mirrorMargins: !!cfg.mirrorMargins
+      };
+
+      const template = {
+        id: 'custom-' + Date.now(),
+        name: name.trim(),
+        cssVars,
+        layout
+      };
+
+      TemplateManager.saveCustomTemplate(template);
+      this._initCustomTemplates();
+      const sel = document.getElementById('sel-preset-template');
+      if (sel) {
+        sel.value = template.id;
+        sel.dispatchEvent(new Event('change'));
+      }
+      this._showToast(`✨ Šablona "${template.name}" byla uložena včetně rozvržení strany`);
+    }
+
+    _saveWebStyleAsTemplate() {
+      const activeChap = this.chapterManager.getActiveChapter();
+      const tokens = activeChap?.styleTokens;
+      let defaultName = 'Styl z webu';
+      if (activeChap?.sourceUrl) {
+        try {
+          defaultName = 'Styl webu ' + new URL(activeChap.sourceUrl).hostname.replace('www.', '');
+        } catch (e) {}
+      }
+      const name = prompt('Zadejte název šablony z webu:', defaultName);
+      if (!name || !name.trim()) return;
+
+      const brandColor = tokens?.brandColor || '#0284c7';
+      const headColor = tokens?.headingColor || brandColor;
+      const pColor = tokens?.pColor || '#1e293b';
+      const fontFam = tokens?.bodyFont ? ContentExtractor._buildFontStack(tokens.bodyFont) : 'Inter, sans-serif';
+      const headFam = tokens?.headingFont ? ContentExtractor._buildFontStack(tokens.headingFont) : fontFam;
+
+      const cssVars = {
+        '--doc-primary': brandColor,
+        '--doc-primary-light': tokens?.lightBg || '#f0f9ff',
+        '--doc-primary-border': tokens?.lightBorder || '#bae6fd',
+        '--doc-secondary': tokens?.secondaryColor || '#0369a1',
+        '--doc-headings': headColor,
+        '--doc-text': pColor,
+        '--doc-font-family': fontFam,
+        '--doc-font-heading': headFam,
+        '--doc-font-size-base': '11pt',
+        '--doc-line-height': '1.55',
+        '--doc-letter-spacing': '0px',
+        '--doc-heading-scale': '1.25',
+        '--doc-heading-margin-top': '1.2em',
+        '--doc-heading-margin-bottom': '0.45em',
+        '--doc-paragraph-margin-bottom': '0.8em'
+      };
+
+      const cfg = this.paginationEngine.config;
+      const template = {
+        id: 'custom-' + Date.now(),
+        name: name.trim(),
+        cssVars,
+        layout: {
+          format: cfg.format || 'a4',
+          orientation: cfg.orientation || 'portrait',
+          columns: cfg.columns || 1,
+          marginTop: cfg.marginTop ?? 20,
+          marginBottom: cfg.marginBottom ?? 20,
+          marginLeft: cfg.marginLeft ?? 20,
+          marginRight: cfg.marginRight ?? 20,
+          mirrorMargins: !!cfg.mirrorMargins
+        },
+        fonts: [tokens?.headingFont, tokens?.bodyFont].filter(Boolean)
+      };
+
+      TemplateManager.saveCustomTemplate(template);
+      this._initCustomTemplates();
+      const sel = document.getElementById('sel-preset-template');
+      if (sel) {
+        sel.value = template.id;
+        sel.dispatchEvent(new Event('change'));
+      }
+      this._showToast(`⭐ Šablona z webu "${template.name}" byla uložena`);
+    }
+
+    _deleteCurrentCustomTemplate() {
+      const sel = document.getElementById('sel-preset-template');
+      const val = sel?.value;
+      if (!val || !val.startsWith('custom-')) return;
+      if (confirm('Opravdu chcete smazat tuto vlastní šablonu?')) {
+        TemplateManager.deleteCustomTemplate(val);
+        this._initCustomTemplates();
+        if (sel) {
+          sel.value = 'modern-edu';
+          sel.dispatchEvent(new Event('change'));
+        }
+        this._showToast('🗑️ Šablona byla smazána');
+      }
     }
 
     _bindDrawerEvents() {
@@ -4287,21 +7432,19 @@
 
       if (webOptgroup) {
         webOptgroup.innerHTML = '';
-        if (chaptersWithTokens.length === 0) {
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = 'web-original';
+        defaultOpt.textContent = '🌐 Původní styl z webu (Aktivní URL)';
+        webOptgroup.appendChild(defaultOpt);
+
+        chaptersWithTokens.forEach((ch) => {
           const opt = document.createElement('option');
-          opt.value = 'web-original';
-          opt.textContent = '🌐 Původní styl z webu (Aktivní URL)';
+          opt.value = `web-chap-${ch.id}`;
+          const fName = ch.styleTokens.bodyFont ? ch.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Web Font';
+          const cHex = ch.styleTokens.brandColor || '#0284c7';
+          opt.textContent = `🌐 Styl: ${ch.title.substring(0, 24)}${ch.title.length > 24 ? '…' : ''} (${fName}, ${cHex})`;
           webOptgroup.appendChild(opt);
-        } else {
-          chaptersWithTokens.forEach((ch, idx) => {
-            const opt = document.createElement('option');
-            opt.value = `web-chap-${ch.id}`;
-            const fName = ch.styleTokens.bodyFont ? ch.styleTokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : 'Web Font';
-            const cHex = ch.styleTokens.brandColor || '#0284c7';
-            opt.textContent = `🌐 Styl: ${ch.title.substring(0, 24)}${ch.title.length > 24 ? '…' : ''} (${fName}, ${cHex})`;
-            webOptgroup.appendChild(opt);
-          });
-        }
+        });
       }
 
       if (fontSelect) {
@@ -4327,21 +7470,96 @@
         if (e.target === modal) modal.classList.remove('open');
       });
 
-      document.querySelectorAll('.sample-pill').forEach(pill => {
-        pill.addEventListener('click', () => {
-          const sampleId = pill.getAttribute('data-sample-id');
-          const sample = ContentExtractor.getSampleArticles().find(s => s.id === sampleId);
+      const selTestSite = document.getElementById('sel-import-test-site');
+      if (selTestSite && typeof GlobalBenchmarkRegistry !== 'undefined') {
+        const categories = GlobalBenchmarkRegistry.getCategories();
+        const allBenchmarks = GlobalBenchmarkRegistry.getAll();
+        categories.forEach(cat => {
+          const group = document.createElement('optgroup');
+          group.label = cat.name;
+          const items = allBenchmarks.filter(b => b.category === cat.key);
+          items.forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item.id;
+            opt.textContent = `${item.styleTokens.sourceHost || item.id} — ${item.title.substring(0, 36)}...`;
+            group.appendChild(opt);
+          });
+          selTestSite.appendChild(group);
+        });
+
+        const testSiteInfoBox = document.getElementById('test-site-info-box');
+        const testSiteInfoTitle = document.getElementById('test-site-info-title');
+        const testSiteInfoLink = document.getElementById('test-site-info-link');
+        const btnLoadOfflineSample = document.getElementById('btn-load-offline-sample');
+        const btnFetchLiveSample = document.getElementById('btn-fetch-live-sample');
+        const linkDirectUrlExternal = document.getElementById('link-direct-url-external');
+
+        selTestSite.addEventListener('change', () => {
+          const sampleId = selTestSite.value;
+          if (!sampleId) {
+            if (testSiteInfoBox) testSiteInfoBox.style.display = 'none';
+            return;
+          }
+          const sample = GlobalBenchmarkRegistry.find(sampleId) || ContentExtractor.getSampleArticles().find(s => s.id === sampleId);
           if (sample) {
-            this.chapterManager.addChapter(sample.title, sample.htmlContent, sample.sourceUrl);
-            this._syncWebStyleDropdowns();
-            modal?.classList.remove('open');
-            this._showToast('✅ Vzorová lekce byla načtena');
+            if (urlInputEl) {
+              urlInputEl.value = sample.sourceUrl;
+              urlInputEl.focus();
+            }
+            if (testSiteInfoTitle) testSiteInfoTitle.textContent = sample.title;
+            if (testSiteInfoLink) {
+              testSiteInfoLink.href = sample.sourceUrl;
+              testSiteInfoLink.textContent = `🔗 ${sample.sourceUrl} ↗`;
+            }
+            if (testSiteInfoBox) testSiteInfoBox.style.display = 'block';
+            if (linkDirectUrlExternal) {
+              linkDirectUrlExternal.href = sample.sourceUrl;
+              linkDirectUrlExternal.style.display = 'inline';
+            }
           }
         });
-      });
+
+        btnLoadOfflineSample?.addEventListener('click', () => {
+          const sampleId = selTestSite.value;
+          if (!sampleId) return;
+          const sample = GlobalBenchmarkRegistry.find(sampleId) || ContentExtractor.getSampleArticles().find(s => s.id === sampleId);
+          if (sample) {
+            let cleanHtml = sample.htmlContent;
+            if (!cleanHtml && sample.rawHtml) {
+              const sanitized = ContentExtractor.sanitizeRawHTML(sample.rawHtml, sample.sourceUrl, true);
+              cleanHtml = typeof sanitized === 'string' ? sanitized : (sanitized?.htmlContent || sample.rawHtml);
+            }
+            this.chapterManager.addChapter(sample.title, cleanHtml, sample.sourceUrl, {}, sample.styleTokens);
+            if (sample.styleTokens) {
+              this._applyStyleTokens(sample.styleTokens);
+            }
+            this._syncWebStyleDropdowns();
+            this.repaginate();
+            modal?.classList.remove('open');
+            this._showToast(`✅ Rychlá ukázka "${sample.title}" byla vložena`);
+          }
+        });
+
+        btnFetchLiveSample?.addEventListener('click', () => {
+          btnExecuteImport?.click();
+        });
+      }
 
       const urlInputEl = document.getElementById('import-url-input');
       const textInputEl = document.getElementById('import-text-input');
+      const linkDirectUrlExternal = document.getElementById('link-direct-url-external');
+
+      urlInputEl?.addEventListener('input', () => {
+        const u = urlInputEl.value.trim();
+        if (linkDirectUrlExternal) {
+          if (u.startsWith('http://') || u.startsWith('https://')) {
+            linkDirectUrlExternal.href = u;
+            linkDirectUrlExternal.style.display = 'inline';
+          } else {
+            linkDirectUrlExternal.style.display = 'none';
+          }
+        }
+      });
 
       urlInputEl?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -4361,6 +7579,7 @@
           btnExecuteImport.disabled = true;
           try {
             const parsed = await ContentExtractor.fetchFromUrl(urlInput, preserveStyles);
+            
             this.chapterManager.addChapter(parsed.title, parsed.htmlContent, urlInput, {}, parsed.styleTokens);
             if (parsed.styleTokens) {
               this._applyStyleTokens(parsed.styleTokens);

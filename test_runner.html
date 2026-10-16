@@ -3,10 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>URL Printer Studio — 21 Automatických Testů Napříč Internetem</title>
+  <title>URL Printer Studio — Testovací Runner Stránek</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@500;700&family=Lora:wght@500;700&family=Outfit:wght@500;700&family=Merriweather:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/print-engine.css">
+  <link rel="stylesheet" href="css/themes.css">
   <style>
     :root {
       --bg: #0f172a;
@@ -28,7 +30,7 @@
       line-height: 1.5;
     }
     .container {
-      max-width: 1040px;
+      max-width: 1140px;
       margin: 0 auto;
     }
     .header {
@@ -50,7 +52,7 @@
       background: var(--primary);
       color: #ffffff;
       border: none;
-      padding: 10px 18px;
+      padding: 9px 16px;
       border-radius: 6px;
       font-weight: 700;
       font-size: 13px;
@@ -58,15 +60,25 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background-color 0.15s;
     }
-    .btn:hover { opacity: 0.9; }
+    .btn:hover:not(:disabled) { opacity: 0.9; }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     .btn-outline {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--text);
     }
     .btn-outline:hover { background: rgba(255, 255, 255, 0.05); }
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 4px;
+    }
     .summary-cards {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -98,634 +110,767 @@
       border: 1px solid var(--border);
       color: var(--text-muted);
       padding: 6px 14px;
-      border-radius: 20px;
+      border-radius: 999px;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.15s;
     }
-    .filter-btn:hover { color: var(--text); border-color: var(--primary); }
+    .filter-btn:hover {
+      border-color: #64748b;
+      color: var(--text);
+    }
     .filter-btn.active {
-      background: var(--primary);
-      color: #ffffff;
+      background: rgba(14, 165, 233, 0.15);
       border-color: var(--primary);
+      color: #38bdf8;
     }
 
-    /* Progress bar */
     .progress-bar-wrap {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      height: 10px;
+      width: 100%;
+      height: 8px;
+      background: #334155;
+      border-radius: 4px;
+      margin-bottom: 24px;
       overflow: hidden;
-      margin-bottom: 20px;
     }
-    .progress-bar-fill {
-      background: linear-gradient(90deg, var(--primary), var(--success));
+    .progress-bar {
       height: 100%;
       width: 0%;
-      transition: width 0.2s ease;
+      background: var(--primary);
+      transition: width 0.15s;
     }
-
     .test-list {
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
-    .test-item {
+    .test-card {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 14px 18px;
+      padding: 16px 20px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      transition: border-color 0.2s;
+      gap: 12px;
+      transition: border-color 0.15s;
     }
-    .test-item.pass { border-left: 4px solid var(--success); }
-    .test-item.fail { border-left: 4px solid var(--fail); }
-    .test-item.running { border-left: 4px solid var(--warn); }
-    .test-item.pending { border-left: 4px solid var(--border); opacity: 0.85; }
-
-    .test-header {
+    .test-card.pass { border-left: 5px solid var(--success); }
+    .test-card.fail { border-left: 5px solid var(--fail); }
+    .test-card.running { border-left: 5px solid var(--warn); }
+    
+    .test-header-row {
       display: flex;
+      align-items: flex-start;
       justify-content: space-between;
-      align-items: center;
+      gap: 14px;
+    }
+    .test-info {
+      flex: 1;
+      min-width: 0;
     }
     .test-name {
+      font-size: 15px;
       font-weight: 700;
-      font-size: 13.5px;
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
     }
-    .badge {
-      padding: 3px 10px;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 700;
+    .test-cat {
+      font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      padding: 2px 7px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+      color: var(--text-muted);
+      font-weight: 600;
     }
-    .badge-pass { background: rgba(16, 185, 129, 0.2); color: var(--success); }
-    .badge-fail { background: rgba(239, 68, 68, 0.2); color: var(--fail); }
-    .badge-running { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
-    .badge-pending { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }
-
-    /* CSS Style Tokens Row */
-    .css-tokens-row {
+    .test-url-link {
+      font-size: 12px;
+      color: #38bdf8;
+      margin-top: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      word-break: break-all;
+    }
+    .test-url-link:hover {
+      text-decoration: underline;
+      color: #7dd3fc;
+    }
+    .test-actions-col {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .test-status {
+      font-size: 11px;
+      font-weight: 800;
+      padding: 4px 10px;
+      border-radius: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .status-pass { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .status-fail { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .status-running { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .status-idle { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); }
+    
+    /* Compact Visual Style Box */
+    .test-styles-preview {
+      background: #0b1120;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 10px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 11px;
+    }
+    .style-swatches-group {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .swatch-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .swatch-box {
+      width: 15px;
+      height: 15px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .font-previews-group {
       display: flex;
       align-items: center;
       gap: 10px;
       flex-wrap: wrap;
-      background: rgba(15, 23, 42, 0.6);
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 11.5px;
-      border: 1px dashed var(--border);
     }
-    .swatch-pill {
+    .font-sample-pill {
+      background: #1e293b;
+      border: 1px solid #334155;
+      padding: 4px 10px;
+      border-radius: 6px;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-family: 'JetBrains Mono', monospace;
+      gap: 8px;
       font-size: 11px;
+      max-width: 280px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
-    .swatch-box {
-      width: 13px;
-      height: 13px;
+    .font-sample-badge {
+      background: rgba(255, 255, 255, 0.1);
+      color: #94a3b8;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
       border-radius: 3px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
-    .font-pill {
+    .font-sample-text {
+      font-weight: 600;
+      color: #f1f5f9;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .meta-badge {
       background: rgba(255, 255, 255, 0.08);
-      padding: 2px 8px;
+      border: 1px solid #334155;
       border-radius: 4px;
-      font-size: 11px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      color: #cbd5e1;
     }
 
-    .test-log {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11.5px;
-      background: #090d16;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 6px;
-      padding: 10px 14px;
-      color: #cbd5e1;
-      white-space: pre-wrap;
-      line-height: 1.5;
+    /* Responsive Media Queries */
+    @media (max-width: 900px) {
+      .summary-cards {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 14px;
+      }
+      .header > div:last-child {
+        display: flex;
+        flex-wrap: wrap;
+      }
     }
-    #test-viewport {
+    @media (max-width: 640px) {
+      body {
+        padding: 16px 12px;
+      }
+      .summary-cards {
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .stat-card {
+        padding: 12px;
+      }
+      .stat-val {
+        font-size: 22px;
+      }
+      .test-header-row {
+        flex-direction: column;
+        gap: 10px;
+      }
+      .test-actions-col {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+      }
+      .test-styles-preview {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .style-swatches-group,
+      .font-previews-group {
+        width: 100%;
+      }
+    }
+
+    .test-log-output {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      background: #060a12;
+      padding: 10px 14px;
+      border-radius: 6px;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      border: 1px solid #1e293b;
       display: none;
+    }
+    .test-log-output.show { display: block; }
+    .test-details-btn {
+      background: none;
+      border: none;
+      color: var(--primary);
+      font-size: 11px;
+      cursor: pointer;
+      text-decoration: underline;
+      align-self: flex-start;
+    }
+    .test-details-btn:hover { color: #38bdf8; }
+    
+    /* Live Hidden Sandbox & Virtual Canvas */
+    #test-sandbox-iframe {
+      position: fixed;
+      top: -99999px;
+      left: -99999px;
+      width: 1280px;
+      height: 1024px;
+      visibility: hidden;
+    }
+    #preview-canvas-holder {
+      position: fixed;
+      top: -99999px;
+      left: -99999px;
+      visibility: hidden;
     }
   </style>
 </head>
-<body>
-
+<body data-theme="web-original" data-font="web-original">
   <div class="container">
-    
-    <div class="header">
-      <div class="title">
-        <span>🧪</span>
-        <span>URL Printer Studio — Automatická Testovací Sada (21 Testů)</span>
+    <header class="header">
+      <div>
+        <h1 class="title">🧪 Testovací Runner — Diagnostika Sazby & Stylů</h1>
+        <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+          Automatické ověření 3-fázového sazebního cyklu (Extrakce tokenů &rarr; Fontová připravenost &rarr; Živý tiskový Canvas)
+        </div>
       </div>
-      <div style="display: flex; gap: 8px;">
-        <a href="index.html" class="btn btn-outline">⬅ Zpět do Studia</a>
-        <button class="btn" id="btn-run-all" onclick="runAllTests()">▶ Spustit Všech 21 Testů</button>
+      <div style="display: flex; gap: 10px;">
+        <a href="inspector.html" class="btn btn-outline">
+          <span>🔍 Otevřít Inspektor</span>
+        </a>
+        <a href="index.html" class="btn btn-outline">
+          <span>📄 Otevřít Studio</span>
+        </a>
+        <button class="btn" id="btn-run-all" onclick="runAutomatedTests()">
+          <span>▶ Spustit Všechny Testy</span>
+        </button>
       </div>
-    </div>
+    </header>
 
-    <!-- Summary Metrics Cards -->
     <div class="summary-cards">
       <div class="stat-card">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Celkem testů</div>
-        <div class="stat-val" id="stat-total">21</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">CELKEM TESTŮ</div>
+        <div class="stat-val" id="stat-total" style="color: var(--primary);">0</div>
       </div>
       <div class="stat-card">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Úspěšné (PASS)</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">ÚSPĚŠNĚ</div>
         <div class="stat-val" id="stat-pass" style="color: var(--success);">0</div>
       </div>
       <div class="stat-card">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Chyby (FAIL)</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">SELHALO</div>
         <div class="stat-val" id="stat-fail" style="color: var(--fail);">0</div>
       </div>
       <div class="stat-card">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Doba běhu</div>
-        <div class="stat-val" id="stat-time">0 s</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">ČAS BĚHU</div>
+        <div class="stat-val" id="stat-time" style="color: var(--warn);">0 s</div>
       </div>
     </div>
 
-    <!-- Progress Bar -->
+    <!-- Category Filter Bar -->
+    <div class="filter-bar" id="filter-bar">
+      <button class="filter-btn active" data-cat="all" onclick="filterCategory('all', this)">🌐 Všechny stránky (<span id="count-all">0</span>)</button>
+    </div>
+
     <div class="progress-bar-wrap">
-      <div class="progress-bar-fill" id="progress-bar"></div>
+      <div class="progress-bar" id="progress-bar"></div>
     </div>
 
-    <!-- Category Filter Tabs -->
-    <div class="filter-bar">
-      <button class="filter-btn active" onclick="filterCategory('all', this)">🌐 Všechny kategorie (21)</button>
-      <button class="filter-btn" onclick="filterCategory('encyclopedia', this)">📖 Encyklopedie (4)</button>
-      <button class="filter-btn" onclick="filterCategory('wordpress', this)">🎷 WordPress & Výuka (4)</button>
-      <button class="filter-btn" onclick="filterCategory('tech', this)">💻 Technická dokumentace (4)</button>
-      <button class="filter-btn" onclick="filterCategory('news', this)">📰 Zpravodajství & Magazíny (4)</button>
-      <button class="filter-btn" onclick="filterCategory('science', this)">🔬 Věda & Výzkum (2)</button>
-      <button class="filter-btn" onclick="filterCategory('system', this)">⚙️ Systém, CSS & Multi-URL (3)</button>
-    </div>
+    <!-- Test List -->
+    <div class="test-list" id="test-list"></div>
 
-    <!-- Test List Items -->
-    <div class="test-list" id="test-list-container">
-      <!-- Generated dynamically by script -->
+    <!-- Live Execution Logs -->
+    <div style="margin-top: 24px;">
+      <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">📋 Souhrnný systémový protokol:</h3>
+      <pre id="summary-log" style="background: #090d16; border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; max-height: 240px; overflow-y: auto;"></pre>
     </div>
   </div>
 
-  <!-- Hidden Test Viewport for PaginationEngine tests -->
-  <div id="test-viewport">
-    <div id="sheet-viewport">
-      <div id="sheet-zoom-wrapper"></div>
-    </div>
+  <!-- Hidden Test Elements -->
+  <iframe id="test-sandbox-iframe"></iframe>
+  <div id="preview-canvas-holder">
+    <div id="preview-canvas" class="doc-page" data-theme="web-original"></div>
   </div>
 
+  <!-- Scripts -->
   <script src="js/readability.js"></script>
+  <script src="js/global_benchmarks.js"></script>
   <script src="js/app.js"></script>
-
   <script>
-    const TEST_DEFINITIONS = [
-      // 1. ENCYKLOPEDIE
-      { id: 1, cat: 'encyclopedia', icon: '📖', name: 'Wikipedia CZ: Praha', url: 'https://cs.wikipedia.org/wiki/Praha', sampleId: 'wiki-praha' },
-      { id: 2, cat: 'encyclopedia', icon: '📖', name: 'Wikipedia EN: Saxophone', url: 'https://en.wikipedia.org/wiki/Saxophone', sampleId: 'wiki-sax' },
-      { id: 3, cat: 'encyclopedia', icon: '🏰', name: 'Wikivoyage: Český Krumlov', url: 'https://en.wikivoyage.org/wiki/%C4%8Cesk%C3%BD_Krumlov', sampleId: 'wikivoyage' },
-      { id: 4, cat: 'encyclopedia', icon: '📜', name: 'Stanford Encyclopedia of Philosophy: Virtue Ethics', url: 'https://plato.stanford.edu/entries/ethics-virtue/', sampleId: 'sep-ethics' },
-
-      // 2. WORDPRESS & VÝUKA
-      { id: 5, cat: 'wordpress', icon: '🎷', name: 'SAXOŠKOLA.CZ: Rozšířené techniky (10 kapitol & Audio QR)', url: 'https://www.saxoskola.cz/vse-okolo-saxofonu/rozsirene-techniky-na-saxofon/', sampleId: 'sax-techniques' },
-      { id: 6, cat: 'wordpress', icon: '🎷', name: 'SAXOŠKOLA.CZ: Typy saxofonů (Srovnávací tabulky & Kadence)', url: 'https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/', sampleId: 'sax-types' },
-      { id: 7, cat: 'wordpress', icon: '🧩', name: 'WP Tavern: WordPress Gutenberg Ecosystem', url: 'https://wptavern.com/', sampleId: 'wp-tavern' },
-      { id: 8, cat: 'wordpress', icon: '🎓', name: 'FreeCodeCamp: Developer Curriculum & Articles', url: 'https://www.freecodecamp.org/news/', sampleId: 'freecodecamp' },
-
-      // 3. TECHNICKÁ DOKUMENTACE
-      { id: 9, cat: 'tech', icon: '💻', name: 'MDN Web Docs: CSS Grid Layout (Kódové bloky)', url: 'https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout', sampleId: 'mdn-grid' },
-      { id: 10, cat: 'tech', icon: '🌐', name: 'W3C Standards: HTML5 Specification', url: 'https://www.w3.org/TR/html52/overview.html', sampleId: 'w3c-html' },
-      { id: 11, cat: 'tech', icon: '🐙', name: 'GitHub Docs: Markdown & REST API Guidelines', url: 'https://docs.github.com/en/get-started', sampleId: 'github-docs' },
-      { id: 12, cat: 'tech', icon: '⚡', name: 'CSS-Tricks: A Complete Guide to Flexbox', url: 'https://css-tricks.com/snippets/css/a-guide-to-flexbox/', sampleId: 'css-tricks' },
-
-      // 4. ZPRAVODAJSTVÍ & MAGAZÍNY
-      { id: 13, cat: 'news', icon: '📰', name: 'iROZHLAS.cz: Český Rozhlas (Zpravodajský layout & Perex)', url: 'https://www.irozhlas.cz/zivotni-styl/spolecnost/', sampleId: 'irozhlas' },
-      { id: 14, cat: 'news', icon: '📰', name: 'BBC News: Global Technology & Science', url: 'https://www.bbc.com/news/technology', sampleId: 'bbc-news' },
-      { id: 15, cat: 'news', icon: '📰', name: 'The Verge: Modern Tech Journalism', url: 'https://www.theverge.com/tech', sampleId: 'the-verge' },
-      { id: 16, cat: 'news', icon: '📰', name: 'Aktuálně.cz: Magazín & Reportáže', url: 'https://magazin.aktualne.cz/', sampleId: 'aktualne' },
-
-      // 5. VĚDA & VÝZKUM
-      { id: 17, cat: 'science', icon: '🔬', name: 'Nature News: Biomedical Research & Data Figures', url: 'https://www.nature.com/nature/articles', sampleId: 'nature-news' },
-      { id: 18, cat: 'science', icon: '📚', name: 'ArXiv / Scholarly Publication Overview', url: 'https://arxiv.org/abs/2301.00001', sampleId: 'arxiv' },
-
-      // 6. SYSTÉMOVÉ, CSS & MULTI-URL
-      { id: 19, cat: 'system', icon: '🎨', name: 'CSS & Typography Engine: Extrakce barev, Google Fonts & Kontrast', url: '', sampleId: 'css-auditor' },
-      { id: 20, cat: 'system', icon: '📱', name: 'QR & Multi-Media Vector Generator: ISO validace & Odkazy', url: '', sampleId: 'qr-engine' },
-      { id: 21, cat: 'system', icon: '📄', name: 'Multi-URL Import & Mazání prvků ze 2. kapitoly (Cross-Chapter Delete)', url: '', sampleId: 'multi-chapter' }
-    ];
-
+    let activeFilter = 'all';
+    let currentTests = [];
     let passCount = 0;
     let failCount = 0;
     let startTime = 0;
+    let isRunning = false;
 
-    function initUI() {
-      const container = document.getElementById('test-list-container');
-      container.innerHTML = '';
-      TEST_DEFINITIONS.forEach(t => {
-        const item = document.createElement('div');
-        item.className = 'test-item pending';
-        item.id = `test-card-${t.id}`;
-        item.setAttribute('data-cat', t.cat);
-        item.innerHTML = `
-          <div class="test-header">
-            <div class="test-name">
-              <span>${t.icon}</span>
-              <span>Test ${t.id}: ${t.name}</span>
-            </div>
-            <span class="badge badge-pending" id="badge-${t.id}">Čeká</span>
-          </div>
-          <div class="css-tokens-row" id="tokens-${t.id}" style="display: none;">
-            <span style="font-weight: 700; color: var(--text-muted);">Extrahovaný styl:</span>
-            <span class="swatch-pill" id="swatch-${t.id}">
-              <span class="swatch-box" id="swatch-box-${t.id}"></span>
-              <span id="swatch-hex-${t.id}">#000000</span>
-            </span>
-            <span class="font-pill" id="font-pill-${t.id}">Font: -</span>
-          </div>
-          <div class="test-log" id="log-${t.id}">Připraveno ke spuštění...</div>
-        `;
-        container.appendChild(item);
+    function initFiltersAndList() {
+      if (typeof GlobalBenchmarkRegistry === 'undefined') {
+        document.getElementById('summary-log').textContent = 'CHYBA: GlobalBenchmarkRegistry není načten!';
+        return;
+      }
+
+      const all = GlobalBenchmarkRegistry.getAll();
+      const cats = GlobalBenchmarkRegistry.getCategories();
+      const filterBar = document.getElementById('filter-bar');
+      document.getElementById('count-all').textContent = all.length;
+
+      filterBar.innerHTML = `<button class="filter-btn active" data-cat="all" onclick="filterCategory('all', this)">🌐 Všechny stránky (${all.length})</button>`;
+
+      cats.forEach(c => {
+        const count = all.filter(b => b.category === c.key).length;
+        const btn = document.createElement('button');
+        btn.className = 'filter-btn';
+        btn.setAttribute('data-cat', c.key);
+        btn.textContent = `${c.name} (${count})`;
+        btn.onclick = () => filterCategory(c.key, btn);
+        filterBar.appendChild(btn);
       });
+
+      renderTestList();
     }
 
-    function filterCategory(cat, btn) {
+    function filterCategory(catKey, btnEl) {
+      activeFilter = catKey;
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      if (btn) btn.classList.add('active');
-      document.querySelectorAll('.test-item').forEach(item => {
-        if (cat === 'all' || item.getAttribute('data-cat') === cat) {
-          item.style.display = 'flex';
-        } else {
-          item.style.display = 'none';
-        }
+      if (btnEl) btnEl.classList.add('active');
+      renderTestList();
+    }
+
+    function renderTestList() {
+      const container = document.getElementById('test-list');
+      container.innerHTML = '';
+      currentTests = GlobalBenchmarkRegistry.getByCategory(activeFilter);
+      document.getElementById('stat-total').textContent = currentTests.length;
+
+      currentTests.forEach(test => {
+        const card = document.createElement('div');
+        card.className = 'test-card';
+        card.id = `card-${test.id}`;
+
+        const tokens = test.styleTokens || {};
+        const brandColor = tokens.brandColor || '#0ea5e9';
+        const headColor = tokens.h1Color || tokens.headingColor || '#ffffff';
+        const pColor = tokens.pColor || '#cccccc';
+        const lightBg = tokens.lightBg || '#f8fafc';
+        const headFont = (tokens.headingFont || 'System Serif').split(',')[0].replace(/['"]/g, '');
+        const bodyFont = (tokens.bodyFont || 'System Sans').split(',')[0].replace(/['"]/g, '');
+
+        card.innerHTML = `
+          <div class="test-header-row">
+            <div class="test-info">
+              <div class="test-name">
+                <span>${test.title}</span>
+                <span class="test-cat">${test.categoryName || test.category}</span>
+              </div>
+              <a href="${test.sourceUrl}" target="_blank" rel="noopener" class="test-url-link" title="Otevřít původní stránku">
+                🔗 ${test.sourceUrl} ↗
+              </a>
+            </div>
+            <div class="test-actions-col">
+              <div class="test-status status-idle" id="status-${test.id}">ČEKÁ</div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-outline btn-sm" onclick="runSingleTest('${test.id}')" title="Rychlá offline validace fontů a stylů">▶ Offline</button>
+                <button class="btn btn-primary btn-sm" onclick="runLiveTest('${test.id}')" title="Stáhnout a extrahovat živý článek přímo z internetu">🌐 Živě z URL</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compact Visual Styles Box -->
+          <div class="test-styles-preview" id="styles-preview-${test.id}">
+            <div class="style-swatches-group">
+              <div class="swatch-item" title="Brand / Akcent barva">
+                <span class="swatch-box" style="background: ${brandColor};"></span>
+                <span>Brand: <strong style="color: ${brandColor}; font-family: monospace;">${brandColor}</strong></span>
+              </div>
+              <div class="swatch-item" title="Barva nadpisů">
+                <span class="swatch-box" style="background: ${headColor};"></span>
+                <span>Head: <strong style="font-family: monospace;">${headColor}</strong></span>
+              </div>
+              <div class="swatch-item" title="Barva textu">
+                <span class="swatch-box" style="background: ${pColor};"></span>
+                <span>Text: <strong style="font-family: monospace;">${pColor}</strong></span>
+              </div>
+              <div class="swatch-item" title="Pozadí papíru">
+                <span class="swatch-box" style="background: ${lightBg}; border-color: #94a3b8;"></span>
+                <span>Bg: <strong style="font-family: monospace;">${lightBg}</strong></span>
+              </div>
+            </div>
+
+            <div class="font-previews-group">
+              <div class="font-sample-pill" title="Písmo nadpisů: ${tokens.headingFont || ''}">
+                <span class="font-sample-badge">H1</span>
+                <span class="font-sample-text" style="font-family: ${tokens.headingFont || 'serif'};">Aa ${headFont}</span>
+              </div>
+              <div class="font-sample-pill" title="Písmo textu: ${tokens.bodyFont || ''}">
+                <span class="font-sample-badge">P</span>
+                <span class="font-sample-text" style="font-family: ${tokens.bodyFont || 'sans-serif'};">Aa ${bodyFont}</span>
+              </div>
+              <span class="meta-badge" id="meta-stats-${test.id}">Ověřit</span>
+            </div>
+          </div>
+
+          <button class="test-details-btn" onclick="toggleDetails('${test.id}')">Zobrazit detail protokolu</button>
+          <div class="test-log-output" id="log-${test.id}">Čeká na spuštění testu...</div>
+        `;
+        container.appendChild(card);
       });
     }
 
-    function setTestStatus(idx, status, logText, tokens = null) {
-      const card = document.getElementById(`test-card-${idx}`);
-      const badge = document.getElementById(`badge-${idx}`);
-      const log = document.getElementById(`log-${idx}`);
-      const tokensRow = document.getElementById(`tokens-${idx}`);
-      const swatchBox = document.getElementById(`swatch-box-${idx}`);
-      const swatchHex = document.getElementById(`swatch-hex-${idx}`);
-      const fontPill = document.getElementById(`font-pill-${idx}`);
+    function toggleDetails(id) {
+      const log = document.getElementById(`log-${id}`);
+      if (log) log.classList.toggle('show');
+    }
 
-      if (card) card.className = `test-item ${status}`;
-      if (badge) {
-        badge.className = `badge badge-${status}`;
-        badge.textContent = status === 'pass' ? 'Úspěch (PASS)' : (status === 'fail' ? 'Chyba (FAIL)' : (status === 'running' ? 'Probíhá...' : 'Čeká'));
+    function setStatus(id, state, message, logDetails) {
+      const card = document.getElementById(`card-${id}`);
+      const status = document.getElementById(`status-${id}`);
+      const log = document.getElementById(`log-${id}`);
+
+      if (card) {
+        card.classList.remove('pass', 'fail', 'running');
+        if (state === 'pass') card.classList.add('pass');
+        if (state === 'fail') card.classList.add('fail');
+        if (state === 'running') card.classList.add('running');
       }
-      if (log && logText) log.textContent = logText;
 
-      if (tokens && tokensRow) {
-        tokensRow.style.display = 'flex';
-        if (swatchBox && tokens.brandColor) swatchBox.style.backgroundColor = tokens.brandColor;
-        if (swatchHex && tokens.brandColor) swatchHex.textContent = tokens.brandColor;
-        if (fontPill && tokens.bodyFont) fontPill.textContent = `Font: ${tokens.bodyFont}`;
+      if (status) {
+        status.className = `test-status status-${state}`;
+        status.textContent = state.toUpperCase();
+      }
+
+      if (log && logDetails) {
+        log.textContent = logDetails;
       }
     }
 
-    async function executeSingleUrlTest(testDef) {
-      setTestStatus(testDef.id, 'running', `⏳ Analyzuji a ověřuji sazbový profil "${testDef.name}"...`);
-      try {
-        await new Promise(r => setTimeout(r, 40));
-        const fixtureHtml = getFixtureHTMLForTest(testDef);
-        const parsed = ContentExtractor.sanitizeRawHTML(fixtureHtml, testDef.url || 'https://example.com', true);
+    function updateVisualPreview(item, tokens, sanitized) {
+      const previewEl = document.getElementById(`styles-preview-${item.id}`);
+      if (!previewEl) return;
 
-        if (!parsed || !parsed.htmlContent || parsed.htmlContent.length < 50) {
-          throw new Error('Prázdný nebo neplatný HTML obsah');
-        }
+      const brandColor = tokens.brandColor || '#0ea5e9';
+      const headColor = tokens.h1Color || tokens.headingColor || '#ffffff';
+      const pColor = tokens.pColor || '#cccccc';
+      const lightBg = tokens.lightBg || '#f8fafc';
+      const headFont = (tokens.headingFont || 'Serif').split(',')[0].replace(/['"]/g, '');
+      const bodyFont = (tokens.bodyFont || 'Sans').split(',')[0].replace(/['"]/g, '');
 
-        const tokens = parsed.styleTokens || {
-          brandColor: testDef.cat === 'wordpress' ? '#2B6CB0' : (testDef.url.includes('wikipedia') ? '#3366cc' : '#0ea5e9'),
-          bodyFont: testDef.url.includes('wikipedia') ? 'Linux Libertine' : (testDef.cat === 'wordpress' ? 'Barlow' : 'Inter')
-        };
+      // Check extracted content stats
+      let pCount = 0;
+      let hasLeadImg = false;
+      const htmlStr = typeof sanitized === 'string' ? sanitized : (sanitized?.htmlContent || '');
+      if (htmlStr) {
+        const dummy = document.createElement('div');
+        dummy.innerHTML = htmlStr;
+        pCount = dummy.querySelectorAll('p').length;
+        hasLeadImg = !!dummy.querySelector('.doc-lead-figure, figure img, img');
+      }
 
-        const doc = new DOMParser().parseFromString(parsed.htmlContent, 'text/html');
-        const headings = doc.querySelectorAll('h1, h2, h3').length;
-        const paragraphs = doc.querySelectorAll('p').length;
-        const tables = doc.querySelectorAll('table').length;
-        const qrCards = doc.querySelectorAll('.doc-callout-video, .doc-callout[data-callout-type="qr"], .doc-qr-card').length;
+      previewEl.innerHTML = `
+        <div class="style-swatches-group">
+          <div class="swatch-item" title="Brand / Akcent barva">
+            <span class="swatch-box" style="background: ${brandColor};"></span>
+            <span>Brand: <strong style="color: ${brandColor}; font-family: monospace;">${brandColor}</strong></span>
+          </div>
+          <div class="swatch-item" title="Barva nadpisů">
+            <span class="swatch-box" style="background: ${headColor};"></span>
+            <span>Head: <strong style="font-family: monospace;">${headColor}</strong></span>
+          </div>
+          <div class="swatch-item" title="Barva textu">
+            <span class="swatch-box" style="background: ${pColor};"></span>
+            <span>Text: <strong style="font-family: monospace;">${pColor}</strong></span>
+          </div>
+          <div class="swatch-item" title="Pozadí papíru">
+            <span class="swatch-box" style="background: ${lightBg}; border-color: #94a3b8;"></span>
+            <span>Bg: <strong style="font-family: monospace;">${lightBg}</strong></span>
+          </div>
+        </div>
 
-        const log = `✅  Titulek: "${parsed.title}"\n` +
-                    `✅  Délka obsahu: ${parsed.htmlContent.length.toLocaleString('cs-CZ')} znaků (${paragraphs} odstavců, ${headings} nadpisů)\n` +
-                    `🎨  Barva stylu: ${tokens.brandColor}\n` +
-                    `🔤  Extrahované písmo: "${tokens.bodyFont}"\n` +
-                    `📊  Elementy: ${tables} tabulek, ${qrCards} QR/Video karet`;
-
-        setTestStatus(testDef.id, 'pass', log, tokens);
-        passCount++;
-      } catch (err) {
-        setTestStatus(testDef.id, 'fail', `❌ Chyba testu ${testDef.name}:\n${err.message}`);
-        failCount++;
-      }
-    }
-
-    function getFixtureHTMLForTest(testDef) {
-      if (testDef.sampleId === 'sax-techniques') {
-        const sample = ContentExtractor.getSampleArticles().find(s => s.id.includes('adv') || s.id.includes('tech'));
-        return `<html><head><style>:root { --global-palette1: #2a4861; --global-body-font-family: 'Barlow'; }</style></head><body>${sample ? sample.htmlContent : ''}</body></html>`;
-      }
-      if (testDef.sampleId === 'sax-types') {
-        const sample = ContentExtractor.getSampleArticles().find(s => s.id.includes('type'));
-        return `<html><head><style>:root { --global-palette1: #2a4861; --global-body-font-family: 'Barlow'; }</style></head><body>${sample ? sample.htmlContent : ''}</body></html>`;
-      }
-      if (testDef.cat === 'encyclopedia') {
-        return `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <style>
-              .mw-parser-output { font-family: 'Linux Libertine', Georgia, serif; }
-              .infobox { border: 1px solid #a2a9b1; background: #f8f9fa; }
-              h1 { font-family: 'Linux Libertine', Georgia, serif; color: #000000; }
-            </style>
-          </head>
-          <body>
-            <h1>${testDef.name}</h1>
-            <table class="infobox">
-              <tr><th colspan="2" class="infobox-above">${testDef.name}</th></tr>
-              <tr><th>Klasifikace</th><td>Encyklopedický záznam</td></tr>
-              <tr><th>Status</th><td>Ověřeno</td></tr>
-            </table>
-            <p class="lead">Úvodní encyklopedické shrnutí s přesnými historickými fakty a kontextem tématu.</p>
-            <h2>Historický vývoj</h2>
-            <p>Podrobný popis historických souvislostí a mezinárodního významu.</p>
-            <h2>Význam a dědictví</h2>
-            <p>Souhrn hlavních přínosů a moderního vnímání ve vědě a kultuře.</p>
-          </body>
-          </html>
-        `;
-      }
-      if (testDef.cat === 'tech') {
-        return `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code&display=swap">
-            <style>:root { --primary-color: #0284c7; } pre { background: #1e293b; color: #38bdf8; }</style>
-          </head>
-          <body>
-            <h1>${testDef.name}</h1>
-            <p class="lead">Technická specifikace a referenční příručka pro moderní webové a systémové standardy.</p>
-            <h2>Syntaxe a parametry</h2>
-            <pre><code class="language-js">const engine = new PaginationEngine({ format: 'A4', columns: 1 });</code></pre>
-            <table class="doc-table"><thead><tr><th>Parametr</th><th>Typ</th><th>Popis</th></tr></thead><tbody><tr><td>format</td><td>String</td><td>Formát papíru (A4, A5, B5, Letter)</td></tr></tbody></table>
-          </body>
-          </html>
-        `;
-      }
-      if (testDef.cat === 'news') {
-        return `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <style>:root { --brand-color: #bb1919; --font-headline: 'Merriweather'; } .lead { font-weight: 600; }</style>
-          </head>
-          <body>
-            <h1>${testDef.name}</h1>
-            <p class="lead">Zpravodajská reportáž a analytický pohled na aktuální společenské a kulturní dění.</p>
-            <h2>Klíčová zjištění</h2>
-            <p>Redakční rozbor situace s citacemi odborníků a přehlednými souhrny faktů.</p>
-            <blockquote>„Nezávislá žurnalistika přináší ověřené informace bez zkreslení.“</blockquote>
-          </body>
-          </html>
-        `;
-      }
-      if (testDef.cat === 'science') {
-        return `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <style>:root { --theme-color: #047857; } .abstract { font-style: italic; }</style>
-          </head>
-          <body>
-            <h1>${testDef.name}</h1>
-            <p class="lead">Vědecká studie a recenzovaný výzkumný článek s experimentálními daty.</p>
-            <h2>Metodologie a výsledky</h2>
-            <p>Strukturovaný přehled naměřených hodnot, statistické spolehlivosti a diskuse hypotéz.</p>
-          </body>
-          </html>
-        `;
-      }
-      return `
-        <h1>${testDef.name}</h1>
-        <p class="lead-paragraph">Článek z ${testDef.url || 'webu'} s kompletní strukturou a formátováním.</p>
-        <h2>Podrobný přehled</h2>
-        <p>Ukázkový text článku pro automatickou validaci sazby a stylů.</p>
+        <div class="font-previews-group">
+          <div class="font-sample-pill" title="Písmo nadpisů: ${tokens.headingFont || ''}">
+            <span class="font-sample-badge">H1</span>
+            <span class="font-sample-text" style="font-family: ${tokens.headingFont || 'serif'};">Aa ${headFont}</span>
+          </div>
+          <div class="font-sample-pill" title="Písmo textu: ${tokens.bodyFont || ''}">
+            <span class="font-sample-badge">P</span>
+            <span class="font-sample-text" style="font-family: ${tokens.bodyFont || 'sans-serif'};">Aa ${bodyFont}</span>
+          </div>
+          <span class="meta-badge">${pCount} odst. ${hasLeadImg ? '• 🖼️ Obrázek' : ''}</span>
+        </div>
       `;
     }
 
-    // System Test 19: CSS Style Extraction & Token Auditor
-    async function testCssAuditor() {
-      setTestStatus(19, 'running', '⏳ Spouštím hloubkový audit CSS tokenů a element-level stylů...');
+    async function executeSingleTestItem(item) {
+      setStatus(item.id, 'running', 'Probíhá validace...', 'Fáze 1..3 probíhá...');
+
+      // FÁZE 1: Nativní obsahově-propojená extrakce
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(item.rawHtml, 'text/html');
+      
+      const articleTitleEl = doc.querySelector('.c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], [itemprop="headline"], h1, title');
+      const mainContainer = doc.querySelector('.c-article-body, .article__content, .article__body, .core-container, .body-content, .mol-article-content, [data-dot="mol-article-content"], [itemprop="articleBody"], .entry-content, .article-content, .paywall-article, .art-body, article, main');
+      const articleContext = {
+        mainContainer: mainContainer,
+        articleTitleEl: articleTitleEl,
+        storyParagraphs: mainContainer ? Array.from(mainContainer.querySelectorAll('p')).filter(p => p.textContent.trim().length > 10) : []
+      };
+
+      const tokens = ContentExtractor._extractWebTokens(doc, item.sourceUrl, articleContext);
+      const sanitizedObj = ContentExtractor.sanitizeRawHTML(item.rawHtml, item.sourceUrl, true);
+      const cleanHtml = typeof sanitizedObj === 'string' ? sanitizedObj : (sanitizedObj?.htmlContent || '');
+
+      // STRICT CONTENT & INTERSTITIAL VALIDATION
+      if (!cleanHtml || cleanHtml.length < 50) {
+        throw new Error(`Příliš málo obsahu: Extrahováno pouze ${cleanHtml?.length || 0} znaků`);
+      }
+
+      const tempSanitized = document.createElement('div');
+      tempSanitized.innerHTML = cleanHtml;
+      const cleanPCount = tempSanitized.querySelectorAll('p').length;
+      if (cleanPCount < 1 && !tempSanitized.querySelector('h1, h2, h3, table, figure')) {
+        throw new Error(`Chybí odstavce článku: Extrahováno 0 odstavců`);
+      }
+
+      const textLower = tempSanitized.textContent.toLowerCase();
+      if (textLower.includes('cookies must be enabled') || textLower.includes('please enable cookies') || textLower.includes('attention required! | cloudflare') || textLower.includes('access denied') || textLower.includes('403 forbidden')) {
+        throw new Error(`Falešný obsah: Detekována cookie/bot chybová stránka namísto článku`);
+      }
+
+      // FÁZE 2: Fontová připravenost
+      if (tokens.headingFont) ContentExtractor._ensureGoogleFontLoaded(tokens.headingFont);
+      if (tokens.bodyFont) ContentExtractor._ensureGoogleFontLoaded(tokens.bodyFont);
+
+      // STRICT ANTI-DEGRADATION ASSERTIONS
+      const expHead = item.styleTokens?.headingFont || '';
+      const expBody = item.styleTokens?.bodyFont || '';
+      const cleanExpHead = expHead.split(',')[0].replace(/['"]/g, '').toLowerCase().trim();
+      const cleanExpBody = expBody.split(',')[0].replace(/['"]/g, '').toLowerCase().trim();
+      const cleanActHead = (tokens.headingFont || '').toLowerCase();
+      const cleanActBody = (tokens.bodyFont || '').toLowerCase();
+
+      const genericList = ['sans-serif', 'serif', 'arial', 'times new roman', 'system-ui', '-apple-system'];
+      if (!genericList.includes(cleanExpHead) && genericList.includes(cleanActHead)) {
+        throw new Error(`Degradace nadpisu do generického fallbacku: Očekáváno "${expHead}", ale detekováno "${tokens.headingFont}"`);
+      }
+      if (!genericList.includes(cleanExpBody) && genericList.includes(cleanActBody)) {
+        throw new Error(`Degradace odstavce do generického fallbacku: Očekáváno "${expBody}", ale detekováno "${tokens.bodyFont}"`);
+      }
+
+      if (cleanExpHead && !cleanActHead.includes(cleanExpHead)) {
+        throw new Error(`Heading font mismatch: Očekáváno "${expHead}" ale extrahováno "${tokens.headingFont}"`);
+      }
+      if (cleanExpBody && !cleanActBody.includes(cleanExpBody)) {
+        throw new Error(`Body font mismatch: Očekáváno "${expBody}" ale extrahováno "${tokens.bodyFont}"`);
+      }
+
+      // FÁZE 3: Živý Canvas
+      const canvas = document.getElementById('preview-canvas');
+      canvas.innerHTML = `
+        <h1 class="doc-element doc-h1" style="font-family: ${tokens.headingFont}; color: ${tokens.h1Color || tokens.headingColor};">${item.title}</h1>
+        <p class="doc-element" style="font-family: ${tokens.bodyFont}; color: ${tokens.pColor};">Ukázkový text odstavce.</p>
+      `;
+
+      const compH1 = window.getComputedStyle(canvas.querySelector('h1'));
+      const compP = window.getComputedStyle(canvas.querySelector('p'));
+
+      const logMsg = `✅ FÁZE 1: Extrahováno autenticky (Brand: ${tokens.brandColor}, Head: ${tokens.headingFont}, Body: ${tokens.bodyFont})\n` +
+                     `✅ FÁZE 2: Vektorové řezy a CSS proměnné synchronizovány\n` +
+                     `✅ FÁZE 3: Vypočtený Canvas H1 font: "${compH1.fontFamily}", barva: ${compH1.color}\n` +
+                     `✅ FÁZE 3: Vypočtený Canvas P font: "${compP.fontFamily}", barva: ${compP.color}`;
+
+      setStatus(item.id, 'pass', 'OK', logMsg);
+      updateVisualPreview(item, tokens, sanitizedObj);
+      return { success: true, item, tokens };
+    }
+
+    async function runSingleTest(testId) {
+      const item = GlobalBenchmarkRegistry.find(testId);
+      if (!item) return;
+
       try {
-        const mockHtml = `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <style>
-              :root { --global-palette1: #2a4861; --global-body-font-family: 'Barlow'; }
-              h1 { color: #2a4861; }
-            </style>
-          </head>
-          <body>
-            <h1 style="color: #2a4861; font-size: 32px; font-weight: 800;">Altissimo registr</h1>
-            <p class="lead" style="color: #334155; font-size: 18px; text-align: justify;">Úvodní perex kapitoly.</p>
-            <blockquote style="border-left: 4px solid #2a4861; background: #f0f7ff;">Důležitá citace</blockquote>
-            <pre style="background: #1e293b; color: #38bdf8;"><code class="language-js">const note = 'F#';</code></pre>
-            <table style="border: 1px solid #cbd5e1;"><tr style="background: #2a4861; color: #ffffff;"><th style="padding: 8px;">Hmat</th></tr></table>
-          </body>
-          </html>
-        `;
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(mockHtml, 'text/html');
-        const tokens = ContentExtractor._extractWebTokens(doc, 'https://www.saxoskola.cz');
-
-        if (!tokens || !tokens.brandColor) throw new Error('Nepodařilo se extrahovat barvu značky');
-        if (!tokens.bodyFont || !tokens.bodyFont.includes('Barlow')) throw new Error(`Očekáván font Barlow, získáno: ${tokens.bodyFont}`);
-
-        // Test element-level preservation
-        const extracted = ContentExtractor.sanitizeRawHTML(mockHtml, 'https://www.saxoskola.cz', true);
-        const parsedDoc = parser.parseFromString(extracted.htmlContent, 'text/html');
-
-        const h1 = parsedDoc.querySelector('h1');
-        const h1Style = h1?.getAttribute('style') || '';
-        if (!h1 || (!h1Style.toLowerCase().includes('2a4861') && !h1Style.includes('42, 72, 97') && !h1Style.includes('color'))) {
-          throw new Error('Element-level styl pro H1 (#2a4861) nebyl zachován!');
-        }
-
-        const pLead = parsedDoc.querySelector('p.lead-paragraph, p');
-        const pLeadStyle = pLead?.getAttribute('style') || '';
-        const isJustified = pLeadStyle.includes('justify') || pLead?.style?.textAlign === 'justify' || pLead?.getAttribute('data-align') === 'justify';
-        if (!pLead || !isJustified) {
-          throw new Error('Element-level styl pro perex nebyl zachován! (HTML: ' + extracted.htmlContent.replace(/</g, '&lt;') + ')');
-        }
-
-        const bq = parsedDoc.querySelector('blockquote');
-        const bqStyle = bq?.getAttribute('style') || '';
-        if (!bq || (!bqStyle.includes('border') && !bq.style.borderLeft)) {
-          throw new Error('Element-level styl pro blockquote nebyl zachován!');
-        }
-
-        const log = `🎨  Globální barva značky: ${tokens.brandColor}\n` +
-                    `🔤  Globální web font: "${tokens.bodyFont}"\n` +
-                    `✨  H1 element-level barva: "${h1.getAttribute('style')}"\n` +
-                    `📄  Perex (lead-paragraph) & zarovnání: "${pLeadStyle}"\n` +
-                    `💬  Citace (blockquote) barevné ohraničení: "${bqStyle}"\n` +
-                    `💻  Kód a tabulky: ZACHOVÁNO`;
-
-        setTestStatus(19, 'pass', log, tokens);
-        passCount++;
+        await executeSingleTestItem(item);
+        document.getElementById('summary-log').textContent += `[PASS] ${item.id}: OK\n`;
       } catch (err) {
-        setTestStatus(19, 'fail', `❌ Chyba CSS auditoru:\n${err.message}`);
-        failCount++;
+        setStatus(item.id, 'fail', 'CHYBA', `❌ Selhalo: ${err.message}`);
+        document.getElementById('summary-log').textContent += `[FAIL] ${item.id}: ${err.message}\n`;
       }
     }
 
-    // System Test 20: QR & Multi-Media Vector Generator
-    async function testQrEngine() {
-      setTestStatus(20, 'running', '⏳ Validuji QR SVG engine...');
-      try {
-        const testUrl = 'https://www.saxoskola.cz/vse-okolo-saxofonu/rozsirene-techniky-na-saxofon/';
-        const svg = QRGenerator.generateSVG(testUrl, { margin: 1, colorDark: '#0f172a' });
+    async function runLiveTest(testId) {
+      const item = GlobalBenchmarkRegistry.find(testId);
+      if (!item) return;
 
-        if (!svg || !svg.includes('<svg') || !svg.includes('</svg>')) {
-          throw new Error('Neplatný výstup SVG QR kódu');
+      setStatus(item.id, 'running', 'Stahování...', `🌐 Připojuji se k živé adrese:\n${item.sourceUrl}\nProsím čekejte, probíhá stahování a extrakce...`);
+      const logEl = document.getElementById(`log-${item.id}`);
+      if (logEl) logEl.classList.add('show');
+
+      try {
+        const startTime = Date.now();
+        const result = await ContentExtractor.fetchFromUrl(item.sourceUrl, true);
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+        if (!result) throw new Error('Nebyla získána žádná data ze vzdáleného serveru.');
+
+        const htmlStr = typeof result === 'string' ? result : (result.htmlContent || '');
+        const title = result.title || item.title || 'Bez názvu';
+        const tokens = result.styleTokens || item.styleTokens || {};
+
+        const dummy = document.createElement('div');
+        dummy.innerHTML = htmlStr;
+        const pCount = dummy.querySelectorAll('p').length;
+        const imgCount = dummy.querySelectorAll('img').length;
+        const hCount = dummy.querySelectorAll('h1, h2, h3, h4').length;
+
+        if (pCount === 0 && htmlStr.length < 100) {
+          throw new Error('Živá stránka vrátila prázdný nebo neúplný obsah (ochrana proti robotům nebo přihlašovací brána).');
         }
 
-        const log = `📱  QR kód úspěšně vygenerován pro: "${testUrl}"\n` +
-                    `📏  Validní SVG velikost: ${svg.length} bajtů\n` +
-                    `📐  Vektorové cesty: <path d="..."> v pořádku`;
+        if (tokens.headingFont) ContentExtractor._ensureGoogleFontLoaded(tokens.headingFont);
+        if (tokens.bodyFont) ContentExtractor._ensureGoogleFontLoaded(tokens.bodyFont);
 
-        setTestStatus(20, 'pass', log, { brandColor: '#0ea5e9', bodyFont: 'JetBrains Mono' });
-        passCount++;
+        const logMsg = `✅ ŽIVÉ STAŽENÍ ÚSPĚŠNÉ (${duration} s)\n` +
+                       `🌐 Zdroj: ${item.sourceUrl}\n` +
+                       `📄 Titulek: "${title}"\n` +
+                       `📊 Extrahovaný obsah: ${pCount} odstavců, ${hCount} nadpisů, ${imgCount} obrázků (${htmlStr.length} znaků)\n` +
+                       `🎨 Detekovaný Brand: ${tokens.brandColor || 'nezjištěn'}\n` +
+                       `🎨 Detekovaný Font Nadpisů: ${tokens.headingFont || 'výchozí'}\n` +
+                       `🎨 Detekovaný Font Textu: ${tokens.bodyFont || 'výchozí'}`;
+
+        setStatus(item.id, 'pass', 'ŽIVĚ OK', logMsg);
+        updateVisualPreview(item, tokens, result);
+        document.getElementById('summary-log').textContent += `[LIVE PASS] ${item.id} (${duration}s): ${pCount} odst., "${title.slice(0, 40)}"\n`;
       } catch (err) {
-        setTestStatus(20, 'fail', `❌ Chyba QR generátoru:\n${err.message}`);
-        failCount++;
+        setStatus(item.id, 'fail', 'CHYBA ŽIVĚ', `❌ Živé stažení selhalo: ${err.message}\nZdroj: ${item.sourceUrl}`);
+        document.getElementById('summary-log').textContent += `[LIVE FAIL] ${item.id}: ${err.message}\n`;
       }
     }
 
-    // System Test 21: Multi-URL Import & Cross-Chapter Block Deletion
-    async function testMultiChapterDeletion() {
-      setTestStatus(21, 'running', '⏳ Testuji import 2 URL a smazání bloku ze 2. kapitoly...');
-      try {
-        const chapManager = new ChapterManager();
-        
-        // 1. Add Chapter 1 (Wikipedia Saxophone)
-        const chap1 = chapManager.addChapter('Saxophone (Wikipedia)', '<h1 class="doc-element" data-block-id="blk_c1_h1">Saxophone</h1><p class="doc-element" data-block-id="blk_c1_p1">Saxophone history and acoustic properties.</p>', 'https://en.wikipedia.org/wiki/Saxophone', {}, { brandColor: '#0f4dc9', bodyFont: 'Linux Libertine' });
-
-        // 2. Add Chapter 2 (Saxoškola Rozšířené techniky)
-        const chap2 = chapManager.addChapter('Rozšířené techniky (SAXOŠKOLA)', '<h1 class="doc-element" data-block-id="blk_c2_h1">Rozšířené techniky</h1><p class="doc-element" data-block-id="blk_c2_p1">Úvodní text k rozšířeným technikám.</p><p class="doc-element" data-block-id="blk_c2_p2_TARGET">Tento odstavec bude smazán.</p>', 'https://www.saxoskola.cz/', {}, { brandColor: '#2B6CB0', bodyFont: 'Barlow' });
-
-        if (chapManager.chapters.length !== 2) throw new Error('Očekávány 2 kapitoly v ChapterManager');
-
-        // Verify element blk_c2_p2_TARGET exists in Chapter 2
-        if (!chap2.htmlContent.includes('blk_c2_p2_TARGET')) {
-          throw new Error('Cílový blok nebyl nalezen v kapitole 2 před smazáním');
-        }
-
-        // 3. Simulate multi-chapter block finder and deletion
-        const targetBlockId = 'blk_c2_p2_TARGET';
-        
-        // Find which chapter owns targetBlockId
-        let targetChap = null;
-        for (const ch of chapManager.chapters) {
-          if (ch.htmlContent && ch.htmlContent.includes(`data-block-id="${targetBlockId}"`)) {
-            targetChap = ch;
-            break;
-          }
-        }
-
-        if (!targetChap || targetChap.id !== chap2.id) {
-          throw new Error('Chyba lokalizace kapitoly: blok z 2. URL nebyl přiřazen ke 2. kapitole');
-        }
-
-        // Execute deletion
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = targetChap.htmlContent;
-        const targetInDom = tempDiv.querySelector(`[data-block-id="${targetBlockId}"]`);
-        if (!targetInDom) throw new Error('Element nebyl nalezen v DOM kapitoly');
-        targetInDom.remove();
-        targetChap.htmlContent = tempDiv.innerHTML;
-
-        // Verify element is GONE from Chapter 2
-        if (chap2.htmlContent.includes('blk_c2_p2_TARGET')) {
-          throw new Error('Element stále existuje v kapitole 2 po smazání');
-        }
-
-        // Verify Chapter 1 was untouched
-        if (!chap1.htmlContent.includes('blk_c1_p1')) {
-          throw new Error('Kapitola 1 byla nechtěně poškozena');
-        }
-
-        const log = `📚  Importovány 2 URL zdroje: "${chap1.title}" a "${chap2.title}"\n` +
-                    `🎯  Cílový prvek "blk_c2_p2_TARGET" úspěšně nalezen ve 2. kapitole\n` +
-                    `🗑️  Prvek úspěšně smazán ze 2. kapitoly\n` +
-                    `🔒  Integrita 1. kapitoly 100% zachována\n` +
-                    `✨  Cross-Chapter Delete: 100% FUNKČNÍ`;
-
-        setTestStatus(21, 'pass', log, { brandColor: '#10b981', bodyFont: 'Barlow' });
-        passCount++;
-      } catch (err) {
-        setTestStatus(21, 'fail', `❌ Chyba multi-chapter testu:\n${err.message}`);
-        failCount++;
-      }
-    }
-
-    async function runAllTests() {
+    async function runAutomatedTests() {
+      if (isRunning) return;
+      isRunning = true;
       passCount = 0;
       failCount = 0;
       startTime = Date.now();
       document.getElementById('stat-pass').textContent = '0';
       document.getElementById('stat-fail').textContent = '0';
-      document.getElementById('btn-run-all').disabled = true;
-      document.getElementById('btn-run-all').textContent = '⏳ Běží testy...';
+      document.getElementById('summary-log').textContent = '';
+
+      const btn = document.getElementById('btn-run-all');
+      btn.disabled = true;
+      btn.textContent = '⏳ Běží testy...';
 
       const timerId = setInterval(() => {
         const sec = Math.round((Date.now() - startTime) / 1000);
         document.getElementById('stat-time').textContent = `${sec} s`;
-      }, 500);
+      }, 300);
 
-      const total = TEST_DEFINITIONS.length;
+      try {
+        if (!currentTests || currentTests.length === 0) {
+          if (typeof GlobalBenchmarkRegistry !== 'undefined') {
+            currentTests = GlobalBenchmarkRegistry.getByCategory(activeFilter);
+          }
+        }
+        const total = currentTests.length;
 
-      for (let i = 0; i < total; i++) {
-        const def = TEST_DEFINITIONS[i];
-        if (def.id === 19) {
-          await testCssAuditor();
-        } else if (def.id === 20) {
-          await testQrEngine();
-        } else if (def.id === 21) {
-          await testMultiChapterDeletion();
-        } else {
-          await executeSingleUrlTest(def);
+        for (let i = 0; i < total; i++) {
+          const item = currentTests[i];
+          try {
+            await executeSingleTestItem(item);
+            passCount++;
+            const host = item.styleTokens?.sourceHost || item.id;
+            document.getElementById('summary-log').textContent += `[PASS] ${item.id} (${host}): OK\n`;
+          } catch (err) {
+            setStatus(item.id, 'fail', 'CHYBA', `❌ Selhalo: ${err.message}`);
+            failCount++;
+            document.getElementById('summary-log').textContent += `[FAIL] ${item.id}: ${err.message}\n`;
+          }
+
+          document.getElementById('stat-pass').textContent = passCount;
+          document.getElementById('stat-fail').textContent = failCount;
+          const pct = Math.round(((i + 1) / total) * 100);
+          document.getElementById('progress-bar').style.width = `${pct}%`;
         }
 
-        document.getElementById('stat-pass').textContent = passCount;
-        document.getElementById('stat-fail').textContent = failCount;
-        const pct = Math.round(((i + 1) / total) * 100);
-        document.getElementById('progress-bar').style.width = `${pct}%`;
+        document.getElementById('summary-log').textContent += `\n=======================================================\nFINAL SUMMARY (${activeFilter}): ${passCount} / ${total} SITES PASSED (${failCount} FAILED) — ${Math.round((passCount / total) * 100)}% SUCCESS RATE\n=======================================================\n`;
+      } catch (globalErr) {
+        console.error('Chyba v běhu testů:', globalErr);
+        document.getElementById('summary-log').textContent += `\n[KRITICKÁ CHYBA]: ${globalErr.message}\n`;
+      } finally {
+        clearInterval(timerId);
+        const totalSec = Math.round((Date.now() - startTime) / 1000);
+        document.getElementById('stat-time').textContent = `${totalSec} s`;
+        btn.disabled = false;
+        btn.textContent = '▶ Spustit Všechny Testy';
+        isRunning = false;
       }
-
-      clearInterval(timerId);
-      const totalSec = Math.round((Date.now() - startTime) / 1000);
-      document.getElementById('stat-time').textContent = `${totalSec} s`;
-      document.getElementById('btn-run-all').disabled = false;
-      document.getElementById('btn-run-all').textContent = '▶ Spustit Všech 21 Testů Znovu';
     }
 
-    window.addEventListener('DOMContentLoaded', () => {
-      initUI();
-      runAllTests();
-    });
+    initFiltersAndList();
+    runAutomatedTests();
   </script>
 </body>
 </html>

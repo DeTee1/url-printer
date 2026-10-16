@@ -1,0 +1,1355 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>URL Printer — Web Style Inspector & Pipeline Debugger</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/print-engine.css">
+  <link rel="stylesheet" href="css/themes.css">
+  
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --bg-panel: #111827;
+      --bg-card: #1f2937;
+      --bg-card-hover: #374151;
+      --border-color: #374151;
+      --border-active: #3b82f6;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warn: #f59e0b;
+      --fail: #ef4444;
+      --code-bg: #030712;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* TOPBAR */
+    .inspector-topbar {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+    }
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .brand-title {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.3px;
+    }
+    .brand-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      text-decoration: none;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+    }
+    .btn-secondary:hover { background: var(--bg-card-hover); }
+
+    /* CONTROLS HEADER */
+    .control-section {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-color);
+      padding: 16px 24px;
+    }
+    .input-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .url-input {
+      flex: 1;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-main);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .url-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+    
+    .preset-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .preset-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-right: 8px;
+    }
+    #sel-global-archetype,
+    select {
+      background-color: #1e293b !important;
+      color: #f8fafc !important;
+      border: 1px solid #475569 !important;
+    }
+    #sel-global-archetype option,
+    #sel-global-archetype optgroup,
+    select option,
+    select optgroup {
+      background-color: #0f172a !important;
+      color: #f8fafc !important;
+    }
+    .pill-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .pill-btn:hover {
+      background: var(--bg-card-hover);
+      border-color: #6b7280;
+    }
+    .pill-btn.active {
+      background: rgba(59, 130, 246, 0.2);
+      border-color: var(--primary);
+      color: #93c5fd;
+    }
+
+    /* DIRECT PASTE TEXTAREA */
+    .paste-box-wrap {
+      display: none;
+      margin-top: 12px;
+    }
+    .paste-box {
+      width: 100%;
+      height: 140px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      padding: 12px;
+      resize: vertical;
+      outline: none;
+    }
+    .paste-box:focus { border-color: var(--primary); }
+
+    /* PIPELINE STEP TRACKER */
+    .pipeline-tracker {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      background: var(--bg-panel);
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .pipe-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .pipe-step.done {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.1);
+      color: #34d399;
+    }
+    .pipe-step.error {
+      border-color: rgba(239, 68, 68, 0.4);
+      background: rgba(239, 68, 68, 0.1);
+      color: #f87171;
+    }
+    .pipe-step.idle {
+      opacity: 0.6;
+    }
+    .pipe-step-icon {
+      font-size: 14px;
+    }
+
+    /* MAIN TABS */
+    .main-tabs-bar {
+      display: flex;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0 24px;
+      gap: 4px;
+    }
+    .tab-btn {
+      padding: 12px 18px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover { color: var(--text-main); }
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+      background: rgba(59, 130, 246, 0.05);
+    }
+    .tab-badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: var(--bg-card);
+      border-radius: 10px;
+      color: var(--text-muted);
+    }
+    .tab-btn.active .tab-badge {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    /* CONTENT LAYOUT */
+    .inspector-content {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .tab-pane {
+      display: none;
+    }
+    .tab-pane.active {
+      display: block;
+    }
+
+    /* CARDS & GRIDS */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 20px;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* CODE BOX */
+    .code-box-wrap {
+      position: relative;
+    }
+    .code-box {
+      width: 100%;
+      height: 380px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: #38bdf8;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 14px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .btn-copy {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .btn-copy:hover { color: #fff; background: var(--bg-card-hover); }
+
+    /* TOKEN PREVIEWS */
+    .token-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .token-swatch {
+      width: 44px;
+      height: 44px;
+      border-radius: 8px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      flex-shrink: 0;
+    }
+    .token-meta {
+      overflow: hidden;
+    }
+    .token-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    .token-value {
+      font-size: 13px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+      color: #fff;
+    }
+
+    /* TYPOGRAPHY MATRIX TABLE */
+    .matrix-table-wrap {
+      overflow-x: auto;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .matrix-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+    .matrix-table th {
+      background: var(--bg-card);
+      padding: 12px 16px;
+      font-weight: 700;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-color);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+    }
+    .matrix-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border-color);
+      vertical-align: middle;
+    }
+    .matrix-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .tag-badge {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .color-cell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+    }
+    .color-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .sample-rendered {
+      padding: 6px 12px;
+      background: #ffffff;
+      border-radius: 4px;
+      border: 1px solid #cbd5e1;
+      display: inline-block;
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* LIVE PREVIEW CONTAINER (NON-PAGINATED CONTINUOUS ARTICLE) */
+    .preview-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+      padding: 10px 16px;
+      border-radius: 8px 8px 0 0;
+      border: 1px solid var(--border-color);
+      border-bottom: none;
+    }
+    .device-switcher {
+      display: flex;
+      gap: 6px;
+    }
+    .device-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .device-btn.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+
+    .live-preview-viewport {
+      background: #475569;
+      padding: 30px;
+      border: 1px solid var(--border-color);
+      border-radius: 0 0 8px 8px;
+      display: flex;
+      justify-content: center;
+      min-height: 500px;
+      overflow-x: auto;
+    }
+
+    .live-preview-canvas {
+      background: #ffffff;
+      color: #1e293b;
+      width: 100%;
+      max-width: 820px;
+      padding: 48px;
+      border-radius: 4px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+      transition: max-width 0.2s ease;
+      position: relative;
+    }
+
+    /* PIPELINE LOG LIST */
+    .log-item {
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .log-item.info { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); color: #93c5fd; }
+    .log-item.success { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+    .log-item.warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); color: #fcd34d; }
+    .log-item.error { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5; }
+
+    /* TOAST */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      border: 1px solid var(--primary);
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 9999;
+    }
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body data-theme="web-original" data-font="web-original">
+
+  <!-- TOPBAR -->
+  <header class="inspector-topbar">
+    <div class="brand-group">
+      <div class="brand-icon">🔍</div>
+      <div>
+        <div class="brand-title">URL Printer Studio — Web Style Inspector</div>
+        <div style="font-size: 11px; color: var(--text-muted);">Diagnostický nástroj pro analýzu HTML, CSS a typografie webu</div>
+      </div>
+      <span class="brand-badge">Pipeline Debugger v5.0</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-sync-from-app" class="btn btn-primary" onclick="loadFromAppEditor()">
+        <span style="font-size: 13px;">📥</span>
+        <span>Načíst z editoru aplikace</span>
+      </button>
+      <a href="index.html" class="btn btn-secondary">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        <span>Zpět do URL Printeru</span>
+      </a>
+      <a href="test_runner.html" class="btn btn-secondary">
+        <span>🧪 Automatické testy (115)</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- CONTROLS SECTION -->
+  <section class="control-section">
+    <div class="input-row">
+      <input type="url" id="inp-url" class="url-input" placeholder="Zadejte URL adresu libovolného webu (např. https://www.saxoskola.cz/... nebo https://cs.wikipedia.org/...)" value="https://www.saxoskola.cz/vse-okolo-saxofonu/popis-saxofonu/typy-saxofonu/">
+      <button class="btn btn-primary" id="btn-run-inspect">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span>Analyzovat a inspekto­vat</span>
+      </button>
+      <button class="btn btn-secondary" id="btn-toggle-paste" title="Přepnout na přímé vložení HTML kódu">
+        <span>📝 Vložit HTML</span>
+      </button>
+    </div>
+
+    <!-- TESTED SITES SELECTOR -->
+    <div class="preset-row" style="align-items: center;">
+      <span class="preset-label">Testované stránky:</span>
+      <select id="sel-global-archetype" style="padding: 7px 12px; font-size: 13px; background-color: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 6px; cursor: pointer; min-width: 360px; max-width: 550px;" onchange="onSelectGlobalArchetype(this.value)">
+        <option value="">-- Vyberte testovanou stránku --</option>
+      </select>
+    </div>
+
+    <!-- DIRECT PASTE BOX -->
+    <div class="paste-box-wrap" id="paste-box-wrap">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Vložte surový HTML kód včetně &lt;style&gt; a &lt;link&gt; tagů:</span>
+        <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" id="btn-inspect-pasted">Analyzovat vložený HTML kód</button>
+      </div>
+      <textarea id="inp-pasted-html" class="paste-box" placeholder="<html><head><style>:root { --primary-color: #2a4861; } h1 { color: var(--primary-color); }</style></head><body>...</body></html>"></textarea>
+    </div>
+  </section>
+
+  <!-- PIPELINE PROGRESS TRACKER -->
+  <div class="pipeline-tracker">
+    <div class="pipe-step idle" id="step-1">
+      <span class="pipe-step-icon">📡</span>
+      <div>
+        <div>1. Stažení (Fetch)</div>
+        <div style="font-size: 10px; font-weight: 400; opacity: 0.8;" id="step-1-sub">Čeká na spuštění</div>
+      </div>
+    </div>
+    <div class="pipe-step idle" id="step-2">
+      <span class="pipe-step-icon">🎨</span>
+      <div>
+        <div>2. Extrakce Tokenů</div>
+        <div style="font-size: 10px; font-weight: 400; opacity: 0.8;" id="step-2-sub">CSS Proměnné & Fonty</div>
+      </div>
+    </div>
+    <div class="pipe-step idle" id="step-3">
+      <span class="pipe-step-icon">🧹</span>
+      <div>
+        <div>3. Sémantický Filtr</div>
+        <div style="font-size: 10px; font-weight: 400; opacity: 0.8;" id="step-3-sub">Čištění HTML DOM</div>
+      </div>
+    </div>
+    <div class="pipe-step idle" id="step-4">
+      <span class="pipe-step-icon">🎯</span>
+      <div>
+        <div>4. Aplikace Stylů</div>
+        <div style="font-size: 10px; font-weight: 400; opacity: 0.8;" id="step-4-sub">H1..H6, P, Tabulky</div>
+      </div>
+    </div>
+    <div class="pipe-step idle" id="step-5">
+      <span class="pipe-step-icon">🖼️</span>
+      <div>
+        <div>5. Čistý Náhled</div>
+        <div style="font-size: 10px; font-weight: 400; opacity: 0.8;" id="step-5-sub">Bez zalamování</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN NAVIGATION TABS -->
+  <nav class="main-tabs-bar">
+    <button class="tab-btn active" onclick="switchTab('tab-preview', this)">
+      <span>🖼️ Živý čistý náhled (HTML + CSS)</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('tab-matrix', this)">
+      <span>📐 Typografická matice značek</span>
+      <span class="tab-badge" id="badge-matrix">11 elementů</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('tab-css', this)">
+      <span>🎨 CSS kód & Tokeny</span>
+      <span class="tab-badge" id="badge-css">0 proměnných</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('tab-html', this)">
+      <span>🏷️ HTML kód (Surové vs. Vyčištěné)</span>
+      <span class="tab-badge" id="badge-html">0 KB</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('tab-logs', this)">
+      <span>🐞 Diagnostika & Log pipeline</span>
+    </button>
+  </nav>
+
+  <!-- CONTENT PANES -->
+  <main class="inspector-content">
+
+    <!-- TAB 1: LIVE PREVIEW (NO PAGINATION / NO PAGE BREAKS) -->
+    <div class="tab-pane active" id="tab-preview">
+      <div class="preview-toolbar">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 13px; font-weight: 700; color: #fff;">Čistý renderovaný článek s aplikovanými webovými styly:</span>
+          <span style="font-size: 11px; color: var(--text-muted);">(Zcela bez A4 stránkování a zalamování)</span>
+        </div>
+        <div class="device-switcher">
+          <button class="device-btn active" onclick="setPreviewWidth('100%', this)">🖥️ Desktop (100%)</button>
+          <button class="device-btn" onclick="setPreviewWidth('768px', this)">📱 Tablet (768px)</button>
+          <button class="device-btn" onclick="setPreviewWidth('420px', this)">📱 Mobil (420px)</button>
+        </div>
+      </div>
+      <div class="live-preview-viewport">
+        <div class="live-preview-canvas" id="live-preview-container">
+          <div style="text-align: center; color: #64748b; padding: 40px;">
+            <div style="font-size: 32px; margin-bottom: 10px;">🔍</div>
+            <div style="font-weight: 600;">Zadejte URL adresu nebo klikněte na "Analyzovat a inspekto­vat"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: TYPOGRAPHY MATRIX (COMPUTED STYLES FOR H1..H6, P, ETC.) -->
+    <div class="tab-pane" id="tab-matrix">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>📐 Vypočítané CSS styly aplikované na univerzální elementy</span>
+          </div>
+          <span style="font-size: 12px; color: var(--text-muted);">Měřeno v reálném čase pomocí <code>window.getComputedStyle()</code></span>
+        </div>
+        
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th>Element / Značka</th>
+                <th>Vypočítaná barva písma</th>
+                <th>Rodina písma (font-family)</th>
+                <th>Velikost & Tloušťka</th>
+                <th>Pozadí & Ohraničení</th>
+                <th>Živý náhled v kontextu</th>
+                <th>Status shody</th>
+              </tr>
+            </thead>
+            <tbody id="matrix-tbody">
+              <!-- Dynamically generated rows -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: CSS CODE & DESIGN TOKENS -->
+    <div class="tab-pane" id="tab-css">
+      <!-- DETECTED TOKENS PALETTE -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🎨 Extrahované Design Tokeny (Barevná paleta & Písma)</div>
+        </div>
+        <div class="grid-4" id="tokens-grid">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- CSS VARIABLES MAP & STYLE TAGS -->
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📋 Mapa nalezených CSS proměnných (--*)</div>
+            <span style="font-size: 11px; color: var(--text-muted);" id="css-vars-count">0 proměnných</span>
+          </div>
+          <div class="code-box-wrap">
+            <div class="code-box" id="box-css-vars">Žádné CSS proměnné nebyly detekovány.</div>
+            <button class="btn-copy" onclick="copyBox('box-css-vars')">Kopírovat</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📄 Extrahované &lt;style&gt; bloky & @import pravidla</div>
+            <span style="font-size: 11px; color: var(--text-muted);" id="style-tags-count">0 bloků</span>
+          </div>
+          <div class="code-box-wrap">
+            <div class="code-box" id="box-style-tags">Žádné &lt;style&gt; bloky nebyly detekovány.</div>
+            <button class="btn-copy" onclick="copyBox('box-style-tags')">Kopírovat</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: HTML INSPECTOR (RAW VS CLEANED) -->
+    <div class="tab-pane" id="tab-html">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📥 Surové stažené HTML (Raw Source)</div>
+            <span style="font-size: 11px; color: var(--text-muted);" id="raw-html-stats">0 znaků</span>
+          </div>
+          <div class="code-box-wrap">
+            <div class="code-box" id="box-raw-html">&lt;!-- Surový HTML kód se zobrazí zde --&gt;</div>
+            <button class="btn-copy" onclick="copyBox('box-raw-html')">Kopírovat</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🧹 Vyčištěný sémantický obsah (Cleaned DOM)</div>
+            <span style="font-size: 11px; color: var(--text-muted);" id="cleaned-html-stats">0 elementů</span>
+          </div>
+          <div class="code-box-wrap">
+            <div class="code-box" id="box-cleaned-html">&lt;!-- Vyčištěný sémantický kód se zobrazí zde --&gt;</div>
+            <button class="btn-copy" onclick="copyBox('box-cleaned-html')">Kopírovat</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: PIPELINE LOGS & DIAGNOSTICS -->
+    <div class="tab-pane" id="tab-logs">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🐞 Diagnostický protokol průchodu pipeline</div>
+          <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="clearLogs()">Vymazat log</button>
+        </div>
+        <div id="pipeline-logs-list">
+          <div class="log-item info">
+            <span>ℹ️</span>
+            <span>Inspektor je připraven k analýze. Zadejte URL adresu nebo vyberte vzor výše.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <div class="toast" id="app-toast"></div>
+
+  <!-- LOAD APPLICATION ENGINE -->
+  <script src="js/readability.js"></script>
+  <script src="js/global_benchmarks.js"></script>
+  <script src="js/app.js"></script>
+
+  <!-- INSPECTOR CONTROLLER SCRIPT -->
+  <script>
+    let currentRawHTML = '';
+    let currentCleanedHTML = '';
+    let currentStyleTokens = null;
+    let currentDoc = null;
+
+    // TAB SWITCHING
+    function switchTab(tabId, btn) {
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      
+      const targetPane = document.getElementById(tabId);
+      if (targetPane) targetPane.classList.add('active');
+      if (btn) btn.classList.add('active');
+    }
+
+    // DEVICE WIDTH PREVIEW
+    function setPreviewWidth(width, btn) {
+      document.querySelectorAll('.device-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const canvas = document.getElementById('live-preview-container');
+      if (canvas) canvas.style.maxWidth = width;
+    }
+
+    // LOGGING SYSTEM
+    function addLog(type, message) {
+      const list = document.getElementById('pipeline-logs-list');
+      if (!list) return;
+      const icons = { info: 'ℹ️', success: '✅', warning: '⚠️', error: '❌' };
+      const item = document.createElement('div');
+      item.className = `log-item ${type}`;
+      item.innerHTML = `<span>${icons[type] || '•'}</span><span>[${new Date().toLocaleTimeString()}] ${escapeHTML(message)}</span>`;
+      list.appendChild(item);
+    }
+
+    function clearLogs() {
+      const list = document.getElementById('pipeline-logs-list');
+      if (list) list.innerHTML = '';
+    }
+
+    function setStep(stepNum, status, subtitle) {
+      const el = document.getElementById(`step-${stepNum}`);
+      const sub = document.getElementById(`step-${stepNum}-sub`);
+      if (!el) return;
+      el.className = `pipe-step ${status}`;
+      if (sub && subtitle) sub.textContent = subtitle;
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('app-toast');
+      if (toast) {
+        toast.textContent = msg;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 3000);
+      }
+    }
+
+    function copyBox(boxId) {
+      const box = document.getElementById(boxId);
+      if (box) {
+        navigator.clipboard.writeText(box.textContent);
+        showToast('📋 Kód byl zkopírován do schránky');
+      }
+    }
+
+    function escapeHTML(str) {
+      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // APP EDITOR DATA LOADER
+    function loadFromAppEditor() {
+      try {
+        const raw = localStorage.getItem('urlprint_inspector_transfer');
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data && (data.htmlContent || data.rawHtml)) {
+            clearLogs();
+            if (data.sourceUrl) document.getElementById('inp-url').value = data.sourceUrl;
+            addLog('info', `Načítám data z aktivního článku aplikace: "${data.title || 'Aktivní článek'}"`);
+            setStep(1, 'done', 'Přeneseno z aplikace');
+            analyzeRawHTML(data.rawHtml || data.htmlContent, data.sourceUrl, data.styleTokens, data.htmlContent);
+            showToast('✅ Data z aplikace byla úspěšně načtena do inspektoru');
+            return true;
+          }
+        }
+      } catch (e) {
+        console.warn('Chyba při čtení dat z aplikace:', e);
+      }
+      return false;
+    }
+
+    // PRESET LOADER
+    function loadPreset(url, sampleId) {
+      if (url) document.getElementById('inp-url').value = url;
+
+      if (sampleId) {
+        let sample = null;
+        if (typeof GlobalBenchmarkRegistry !== 'undefined') {
+          sample = GlobalBenchmarkRegistry.find(sampleId);
+        }
+        if (!sample) {
+          sample = ContentExtractor.getSampleArticles().find(s => s.id === sampleId);
+        }
+        if (sample) {
+          clearLogs();
+          addLog('info', `Načítám testovanou stránku: "${sample.title}"`);
+          if (sample.sourceUrl) {
+            document.getElementById('inp-url').value = sample.sourceUrl;
+          }
+          setStep(1, 'done', 'Data načtena');
+          analyzeRawHTML(sample.rawHtml || sample.htmlContent, sample.sourceUrl, sample.styleTokens);
+          return;
+        }
+      }
+      runInspect();
+    }
+
+    // MAIN INSPECTION RUNNER
+    async function runInspect() {
+      const url = document.getElementById('inp-url').value.trim();
+      if (!url) {
+        showToast('⚠️ Zadejte platnou URL adresu');
+        return;
+      }
+
+      clearLogs();
+      addLog('info', `Spouštím inspekci pro URL: ${url}`);
+      setStep(1, 'idle', 'Stahuji...');
+      setStep(2, 'idle', 'Čeká...');
+      setStep(3, 'idle', 'Čeká...');
+      setStep(4, 'idle', 'Čeká...');
+      setStep(5, 'idle', 'Čeká...');
+
+      const btn = document.getElementById('btn-run-inspect');
+      btn.disabled = true;
+      btn.innerHTML = `<span>⏳ Stahuji...</span>`;
+
+      try {
+        const startTime = Date.now();
+        // Use ContentExtractor.fetchFromUrl
+        const parsed = await ContentExtractor.fetchFromUrl(url, true);
+        const elapsed = Date.now() - startTime;
+        
+        setStep(1, 'done', `OK (${elapsed} ms)`);
+        addLog('success', `Stránka byla úspěšně stažena za ${elapsed} ms`);
+
+        currentCleanedHTML = parsed.htmlContent;
+        currentStyleTokens = parsed.styleTokens;
+
+        // Perform full analysis using the exact cleaned HTML
+        analyzeRawHTML(parsed.rawHtml || parsed.htmlContent, url, parsed.styleTokens, parsed.htmlContent);
+      } catch (err) {
+        setStep(1, 'error', 'Selhalo');
+        addLog('error', `Chyba při stahování: ${err.message}`);
+        showToast(`❌ Chyba: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Analyzovat a inspekto­vat</span>`;
+      }
+    }
+
+    function analyzeRawHTML(htmlContent, sourceUrl = '', overrideTokens = null, preCleanedHTML = null) {
+      try {
+        const parser = new DOMParser();
+        currentDoc = parser.parseFromString(htmlContent, 'text/html');
+
+        // 1. EXTRACT OR COMPUTE DESIGN TOKENS (Content-Coupled)
+        setStep(2, 'idle', 'Extrahuji tokeny...');
+        const articleTitleEl = currentDoc.querySelector('.c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], [itemprop="headline"], h1, title');
+        const mainContainer = currentDoc.querySelector('.c-article-body, .article__content, .article__body, .core-container, .body-content, .mol-article-content, [data-dot="mol-article-content"], [itemprop="articleBody"], .entry-content, .article-content, .paywall-article, .art-body, article, main');
+        const articleContext = {
+          mainContainer: mainContainer,
+          articleTitleEl: articleTitleEl,
+          storyParagraphs: mainContainer ? Array.from(mainContainer.querySelectorAll('p')).filter(p => p.textContent.trim().length > 10) : []
+        };
+        const tokens = overrideTokens || ContentExtractor._extractWebTokens(currentDoc, sourceUrl, articleContext);
+        currentStyleTokens = tokens;
+        setStep(2, 'done', `${tokens.bodyFont || 'Inter'}, ${tokens.brandColor || '#0284c7'}`);
+        addLog('success', `Design tokeny: Brand ${tokens.brandColor}, Nadpisy ${tokens.headingColor}, Font ${tokens.bodyFont}`);
+
+        // 2. CLEAN HTML
+        setStep(3, 'idle', 'Filtruji obsah...');
+        if (preCleanedHTML) {
+          currentCleanedHTML = preCleanedHTML;
+        } else {
+          const sanitized = ContentExtractor.sanitizeRawHTML(htmlContent, sourceUrl, true);
+          currentCleanedHTML = typeof sanitized === 'string' ? sanitized : sanitized.htmlContent;
+        }
+        setStep(3, 'done', 'Hotovo');
+        addLog('success', `Sémantický filtr připravil obsah`);
+
+        // 3. APPLY STYLE TOKENS GLOBALLY TO DOCUMENT & PREVIEW
+        setStep(4, 'idle', 'Aplikuji CSS...');
+        applyTokensToViewport(tokens);
+        setStep(4, 'done', 'Aplikováno');
+
+        // 4. RENDER LIVE PREVIEW
+        setStep(5, 'idle', 'Vykresluji...');
+        const previewContainer = document.getElementById('live-preview-container');
+        previewContainer.innerHTML = currentCleanedHTML;
+        setStep(5, 'done', 'Vykresleno');
+        addLog('success', `Živý čistý náhled byl úspěšně sestaven`);
+
+        // 5. UPDATE ALL DIAGNOSTIC PANELS
+        updateTokensPalette(tokens);
+        updateCssVarsPanel(currentDoc);
+        updateHtmlPanels(htmlContent, currentCleanedHTML);
+        updateTypographyMatrix(tokens);
+
+        showToast('✅ Analýza a inspekce dokončena');
+      } catch (err) {
+        addLog('error', `Chyba při analýze: ${err.message}`);
+        console.error(err);
+      }
+    }
+
+    function applyTokensToViewport(tokens) {
+      if (!tokens) return;
+      const setVar = (prop, val) => {
+        if (!val) return;
+        document.documentElement.style.setProperty(prop, val);
+        document.body.style.setProperty(prop, val);
+      };
+
+      const brand = tokens.brandColor || '#0284c7';
+      const headCol = tokens.headingColor || brand;
+      setVar('--doc-primary', brand);
+      setVar('--web-extracted-primary', brand);
+      setVar('--doc-headings', headCol);
+      setVar('--web-extracted-heading', headCol);
+      setVar('--web-h1-color', tokens.h1Color || headCol);
+      setVar('--web-h2-color', tokens.h2Color || headCol);
+      setVar('--web-h3-color', tokens.h3Color || headCol);
+      setVar('--web-h4-color', tokens.h4Color || tokens.h1Color || headCol);
+      setVar('--web-h5-color', tokens.h5Color || tokens.h1Color || headCol);
+      setVar('--web-h6-color', tokens.h6Color || tokens.h1Color || headCol);
+      setVar('--web-p-color', tokens.pColor || '#334155');
+      if (tokens.lightBg) {
+        setVar('--doc-primary-light', tokens.lightBg);
+        setVar('--web-extracted-bg', tokens.lightBg);
+      }
+      if (tokens.lightBorder) {
+        setVar('--doc-primary-border', tokens.lightBorder);
+        setVar('--web-extracted-border', tokens.lightBorder);
+      }
+
+      const bodyStack = tokens.bodyFont?.includes(',') 
+        ? tokens.bodyFont 
+        : ContentExtractor._buildFontStack(tokens.bodyFont);
+      const headStack = tokens.headingFont?.includes(',') 
+        ? tokens.headingFont 
+        : ContentExtractor._buildFontStack(tokens.headingFont || tokens.bodyFont);
+      const h4Stack = tokens.h4Font?.includes(',') 
+        ? tokens.h4Font 
+        : (tokens.h4Font ? ContentExtractor._buildFontStack(tokens.h4Font) : headStack);
+
+      setVar('--doc-font-family', bodyStack);
+      setVar('--web-extracted-font', bodyStack);
+      setVar('--doc-font-heading', headStack);
+      setVar('--web-extracted-heading-font', headStack);
+      setVar('--doc-font-h4', h4Stack);
+      setVar('--web-extracted-h4-font', h4Stack);
+
+      const primaryBodyName = tokens.bodyFont ? tokens.bodyFont.split(',')[0].replace(/['"]/g, '').trim() : '';
+      const primaryHeadName = tokens.headingFont ? tokens.headingFont.split(',')[0].replace(/['"]/g, '').trim() : '';
+      if (primaryBodyName) ContentExtractor._ensureGoogleFontLoaded(primaryBodyName);
+      if (primaryHeadName && primaryHeadName !== primaryBodyName) ContentExtractor._ensureGoogleFontLoaded(primaryHeadName);
+
+      document.body.setAttribute('data-theme', 'web-original');
+      document.body.setAttribute('data-font', 'web-original');
+    }
+
+    function updateTokensPalette(tokens) {
+      const grid = document.getElementById('tokens-grid');
+      if (!grid || !tokens) return;
+
+      const items = [
+        { label: 'Barva značky (Brand)', val: tokens.brandColor || '#0284c7', isColor: true },
+        { label: 'Barva nadpisů (Headings)', val: tokens.headingColor || tokens.brandColor || '#2a4861', isColor: true },
+        { label: 'Barva H1 nadpisu', val: tokens.h1Color || tokens.headingColor || '#2a4861', isColor: true },
+        { label: 'Barva odstavců (Perex/P)', val: tokens.pColor || '#334155', isColor: true },
+        { label: 'Pozadí boxů (Light Bg)', val: tokens.lightBg || '#f0f7ff', isColor: true },
+        { label: 'Ohraničení (Border)', val: tokens.lightBorder || '#cbd5e1', isColor: true },
+        { label: 'Font těla (Body Font)', val: tokens.bodyFont || 'Inter', isColor: false },
+        { label: 'Font nadpisů (Heading Font)', val: tokens.headingFont || tokens.bodyFont || 'Inter', isColor: false }
+      ];
+
+      grid.innerHTML = items.map(it => `
+        <div class="token-card">
+          ${it.isColor ? `<div class="token-swatch" style="background: ${it.val};"></div>` : `<div class="token-swatch" style="background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 20px;">🔤</div>`}
+          <div class="token-meta">
+            <div class="token-name">${it.label}</div>
+            <div class="token-value">${it.val}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function updateCssVarsPanel(doc) {
+      const boxVars = document.getElementById('box-css-vars');
+      const boxStyles = document.getElementById('box-style-tags');
+      if (!doc) return;
+
+      const styleTags = Array.from(doc.querySelectorAll('style'));
+      let allStyleText = styleTags.map((s, i) => `/* Style tag #${i + 1} */\n` + s.textContent.trim()).join('\n\n');
+      
+      const cssVars = [];
+      styleTags.forEach(s => {
+        const text = s.textContent || '';
+        const matches = text.matchAll(/(--[a-zA-Z0-9_-]+)\s*:\s*([^;!}\n]+)/gi);
+        for (const m of matches) {
+          cssVars.push(`${m[1].trim()}: ${m[2].trim()};`);
+        }
+      });
+
+      if (boxVars) {
+        boxVars.textContent = cssVars.length > 0 ? cssVars.join('\n') : 'Nebyly nalezeny žádné CSS proměnné (--*).';
+        document.getElementById('css-vars-count').textContent = `${cssVars.length} proměnných`;
+        document.getElementById('badge-css').textContent = `${cssVars.length} proměnných`;
+      }
+
+      if (boxStyles) {
+        boxStyles.textContent = allStyleText || 'Nebyly nalezeny žádné vložené <style> tagy.';
+        document.getElementById('style-tags-count').textContent = `${styleTags.length} bloků`;
+      }
+    }
+
+    function updateHtmlPanels(rawHtml, cleanedHtml) {
+      const boxRaw = document.getElementById('box-raw-html');
+      const boxCleaned = document.getElementById('box-cleaned-html');
+      
+      if (boxRaw) {
+        boxRaw.textContent = rawHtml;
+        const kb = (rawHtml.length / 1024).toFixed(1);
+        document.getElementById('raw-html-stats').textContent = `${kb} KB (${rawHtml.length} znaků)`;
+        document.getElementById('badge-html').textContent = `${kb} KB`;
+      }
+
+      if (boxCleaned) {
+        boxCleaned.textContent = cleanedHtml;
+        const elCount = (cleanedHtml.match(/<[a-z0-9]+/gi) || []).length;
+        document.getElementById('cleaned-html-stats').textContent = `${elCount} elementů`;
+      }
+    }
+
+    function updateTypographyMatrix(tokens) {
+      const tbody = document.getElementById('matrix-tbody');
+      if (!tbody) return;
+
+      const elementsToTest = [
+        { tag: 'h1', name: 'Nadpis H1 (Hlavní titulek)', sampleText: 'Typy a konstrukce moderních saxofonů' },
+        { tag: 'h2', name: 'Nadpis H2 (Sekce)', sampleText: '1. Altový saxofon v ladění Eb' },
+        { tag: 'h3', name: 'Nadpis H3 (Podsekce)', sampleText: 'Technické parametry a rozsah tónů' },
+        { tag: 'h4', name: 'Nadpis H4', sampleText: 'Materiálové složení korpusu' },
+        { tag: 'p', name: 'Odstavec (Perex & Text)', sampleText: 'Altový saxofon patří mezi nejoblíbenější nástroje pro začátečníky i profesionály.' },
+        { tag: 'blockquote', name: 'Citace (Blockquote)', sampleText: 'Zvuk saxofonu kombinuje sílu žesťů s flexibilitou dřevěných nástrojů.' },
+        { tag: 'th', name: 'Záhlaví tabulky (Table TH)', sampleText: 'Typ saxofonu | Ladění | Rejstřík' },
+        { tag: 'td', name: 'Buňka tabulky (Table TD)', sampleText: 'Alt saxofon (Eb) - 2.5 oktávy' },
+        { tag: 'code', name: 'Kód a technický text (Code)', sampleText: 'const saxRange = ["Bb3", "F#6"];' },
+        { tag: 'a', name: 'Odkaz (Hyperlink A)', sampleText: 'https://www.saxoskola.cz' },
+        { tag: 'li', name: 'Položka seznamu (UL/OL LI)', sampleText: 'Pravidelné čištění esovitého kolínka a hubičky' }
+      ];
+
+      // Create a temporary hidden rendered testing container in live preview to measure exact computed styles
+      const previewContainer = document.getElementById('live-preview-container');
+      const testWrap = document.createElement('div');
+      testWrap.className = 'doc-content';
+      testWrap.style.position = 'absolute';
+      testWrap.style.left = '-9999px';
+      testWrap.style.top = '0';
+      testWrap.style.width = '700px';
+
+      testWrap.innerHTML = `
+        <h1 class="doc-element doc-h1">Nadpis H1</h1>
+        <h2 class="doc-element doc-h2">Nadpis H2</h2>
+        <h3 class="doc-element doc-h3">Nadpis H3</h3>
+        <h4 class="doc-element doc-h4">Nadpis H4</h4>
+        <p class="doc-element doc-p">Odstavec</p>
+        <blockquote class="doc-element doc-quote">Citace</blockquote>
+        <table class="doc-element doc-table"><thead><tr><th class="doc-th">TH</th></tr></thead><tbody><tr><td class="doc-td">TD</td></tr></tbody></table>
+        <code class="doc-element doc-code">Code</code>
+        <a class="doc-element" href="#">Odkaz</a>
+        <ul><li class="doc-element">LI</li></ul>
+      `;
+      previewContainer.appendChild(testWrap);
+
+      const rowsHTML = elementsToTest.map(item => {
+        let el = null;
+        if (item.tag === 'th') el = testWrap.querySelector('th');
+        else if (item.tag === 'td') el = testWrap.querySelector('td');
+        else if (item.tag === 'li') el = testWrap.querySelector('li');
+        else el = testWrap.querySelector(item.tag);
+
+        const computed = el ? window.getComputedStyle(el) : {};
+        const color = computed.color || 'rgb(30, 41, 59)';
+        const hexColor = rgbToHex(color);
+        const fontFam = (computed.fontFamily || 'Inter').split(',')[0].replace(/['"]/g, '');
+        const fontSize = computed.fontSize || '15px';
+        const fontWeight = computed.fontWeight || '400';
+        const bg = computed.backgroundColor || 'transparent';
+        const hexBg = bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' ? rgbToHex(bg) : 'transparent';
+        const border = computed.borderColor ? `${computed.borderWidth} ${computed.borderStyle} ${rgbToHex(computed.borderColor)}` : 'none';
+
+        return `
+          <tr>
+            <td>
+              <span class="tag-badge">&lt;${item.tag.toUpperCase()}&gt;</span>
+              <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">${item.name}</div>
+            </td>
+            <td>
+              <div class="color-cell">
+                <div class="color-dot" style="background: ${color};"></div>
+                <span>${hexColor}</span>
+              </div>
+            </td>
+            <td>
+              <div style="font-weight: 600; color: #fff;">${fontFam}</div>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">${computed.fontFamily || ''}</div>
+            </td>
+            <td>
+              <div style="font-weight: 600;">${fontSize}</div>
+              <div style="font-size: 11px; color: var(--text-muted);">weight: ${fontWeight}</div>
+            </td>
+            <td>
+              <div style="font-size: 12px;">Bg: ${hexBg}</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Border: ${border}</div>
+            </td>
+            <td>
+              <div class="sample-rendered" style="color: ${color}; font-family: ${computed.fontFamily}; font-size: ${fontSize}; font-weight: ${fontWeight};">
+                ${item.sampleText}
+              </div>
+            </td>
+            <td>
+              <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                ✅ Aktivní
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      tbody.innerHTML = rowsHTML;
+      testWrap.remove();
+    }
+
+    function rgbToHex(rgb) {
+      if (!rgb || rgb === 'transparent') return 'transparent';
+      if (rgb.startsWith('#')) return rgb;
+      const m = rgb.match(/\d+/g);
+      if (!m || m.length < 3) return rgb;
+      return '#' + ((1 << 24) + (parseInt(m[0]) << 16) + (parseInt(m[1]) << 8) + parseInt(m[2])).toString(16).slice(1);
+    }
+
+    // TOGGLE DIRECT PASTE
+    document.getElementById('btn-toggle-paste').addEventListener('click', () => {
+      const wrap = document.getElementById('paste-box-wrap');
+      const isShown = wrap.style.display === 'block';
+      wrap.style.display = isShown ? 'none' : 'block';
+    });
+
+    document.getElementById('btn-inspect-pasted').addEventListener('click', () => {
+      const html = document.getElementById('inp-pasted-html').value.trim();
+      if (!html) {
+        showToast('⚠️ Vložte nejprve HTML kód');
+        return;
+      }
+      addLog('info', 'Analyzuji ručně vložený HTML kód...');
+      analyzeRawHTML(html, 'https://vlastni-vlozeny-kod.cz');
+    });
+
+    // EVENT LISTENERS
+    document.getElementById('btn-run-inspect').addEventListener('click', runInspect);
+    document.getElementById('inp-url').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runInspect();
+      }
+    });
+
+    function populateGlobalArchetypesDropdown() {
+      const sel = document.getElementById('sel-global-archetype');
+      if (!sel || typeof GlobalBenchmarkRegistry === 'undefined') return;
+
+      const categories = GlobalBenchmarkRegistry.getCategories();
+      const allBenchmarks = GlobalBenchmarkRegistry.getAll();
+
+      categories.forEach(cat => {
+        const group = document.createElement('optgroup');
+        group.label = cat.name;
+        const items = allBenchmarks.filter(b => b.category === cat.key);
+        items.forEach(item => {
+          const opt = document.createElement('option');
+          opt.value = item.id;
+          opt.textContent = `${item.styleTokens.sourceHost || item.id} — ${item.title.substring(0, 38)}...`;
+          group.appendChild(opt);
+        });
+        sel.appendChild(group);
+      });
+    }
+
+    function onSelectGlobalArchetype(sampleId) {
+      if (!sampleId) return;
+      const benchmark = typeof GlobalBenchmarkRegistry !== 'undefined' ? GlobalBenchmarkRegistry.find(sampleId) : null;
+      if (benchmark) {
+        loadPreset(benchmark.sourceUrl, benchmark.id);
+      }
+    }
+
+    // INITIAL STATE: Automatic sync with main app or clean state
+    window.addEventListener('DOMContentLoaded', () => {
+      populateGlobalArchetypesDropdown();
+      const synced = loadFromAppEditor();
+      if (!synced) {
+        addLog('info', 'Inspektor připraven. Zadejte URL adresu nebo vyberte ze široké databáze globálních archetypů nahoře.');
+      }
+    });
+  </script>
+</body>
+</html>

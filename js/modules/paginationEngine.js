@@ -23,6 +23,7 @@ export class PaginationEngine {
       showPageNumbers: true,
       pageNumberPrefix: 'Strana',
       enableQRFootnotes: true,
+      hideLinks: false,
       enableAutoTOC: true,
       docTitle: 'URL Printer Vzdělávací tiskovina',
       spreadView: false
@@ -35,6 +36,14 @@ export class PaginationEngine {
       this.viewport.classList.add('spread-mode');
     } else {
       this.viewport.classList.remove('spread-mode');
+    }
+    if (this.config.hideLinks !== undefined) {
+      document.body.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
+      if (this.viewport) {
+        this.viewport.querySelectorAll('.paper-sheet').forEach(s => {
+          s.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
+        });
+      }
     }
   }
 
