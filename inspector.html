@@ -829,9 +829,9 @@
   <div class="toast" id="app-toast"></div>
 
   <!-- LOAD APPLICATION ENGINE -->
-  <script src="js/readability.js"></script>
-  <script src="js/global_benchmarks.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/readability.js?v=20261017_2"></script>
+  <script src="js/global_benchmarks.js?v=20261017_2"></script>
+  <script src="js/app.js?v=20261017_2"></script>
 
   <!-- INSPECTOR CONTROLLER SCRIPT -->
   <script>
@@ -1002,8 +1002,8 @@
 
         // 1. EXTRACT OR COMPUTE DESIGN TOKENS (Content-Coupled)
         setStep(2, 'idle', 'Extrahuji tokeny...');
-        const articleTitleEl = currentDoc.querySelector('.c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], [itemprop="headline"], h1, title');
-        const mainContainer = currentDoc.querySelector('.c-article-body, .article__content, .article__body, .core-container, .body-content, .mol-article-content, [data-dot="mol-article-content"], [itemprop="articleBody"], .entry-content, .article-content, .paywall-article, .art-body, article, main');
+        const articleTitleEl = currentDoc.querySelector('h1.post-title, h1.article-title, h1.entry-title, .c-article-title, .article__heading, .c-article-header__title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], [itemprop="headline"], h1, title');
+        const mainContainer = ContentExtractor._findBestArticleContainer(currentDoc) || currentDoc.querySelector('article, main, body');
         const articleContext = {
           mainContainer: mainContainer,
           articleTitleEl: articleTitleEl,

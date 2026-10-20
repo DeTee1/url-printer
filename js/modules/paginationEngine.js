@@ -79,6 +79,9 @@ export class PaginationEngine {
     if (this.config.format === 'a5') {
       sheetWidthMm = this.config.orientation === 'portrait' ? 148 : 210;
       sheetHeightMm = this.config.orientation === 'portrait' ? 210 : 148;
+    } else if (this.config.format === 'b5') {
+      sheetWidthMm = this.config.orientation === 'portrait' ? 176 : 250;
+      sheetHeightMm = this.config.orientation === 'portrait' ? 250 : 176;
     } else if (this.config.format === 'letter') {
       sheetWidthMm = this.config.orientation === 'portrait' ? 215.9 : 279.4;
       sheetHeightMm = this.config.orientation === 'portrait' ? 279.4 : 215.9;
@@ -88,10 +91,11 @@ export class PaginationEngine {
       sheetHeightMm = this.config.orientation === 'portrait' ? 297 : 210;
     }
 
-    const headerHeightMm = this.config.includeHeader ? 12 : 0;
-    const footerHeightMm = this.config.includeFooter ? 12 : 0;
+    const headerHeightMm = this.config.includeHeader ? 10 : 0;
+    const footerHeightMm = this.config.includeFooter ? 10 : 0;
+    const safetyMarginMm = 2.0;
 
-    const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm);
+    const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm + safetyMarginMm);
     const availableHeightPx = availableHeightMm * mmToPx;
     const availableWidthMm = sheetWidthMm - (this.config.marginLeft + this.config.marginRight);
 

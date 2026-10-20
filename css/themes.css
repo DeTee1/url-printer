@@ -63,6 +63,7 @@
    ========================================================================== */
 body[data-theme="web-original"],
 body[data-theme="web-original"] .paper-sheet[data-chapter-id] {
+  --doc-paper-bg: var(--web-extracted-paper-bg, #ffffff);
   --doc-primary: var(--web-extracted-primary, #0f766e);
   --doc-primary-light: var(--web-extracted-bg, #f0fdfa);
   --doc-primary-border: var(--web-extracted-border, #99f6e4);
@@ -74,6 +75,33 @@ body[data-theme="web-original"] .paper-sheet[data-chapter-id] {
   --doc-font-family: var(--web-extracted-font, 'Inter', system-ui, sans-serif);
   --doc-font-heading: var(--web-extracted-heading-font, var(--web-extracted-font, 'Outfit', sans-serif));
   --doc-font-h4: var(--web-extracted-h4-font, var(--doc-font-heading));
+}
+
+body[data-theme="web-original"] .paper-sheet :is(h1.doc-element, .doc-h1) {
+  color: var(--web-h1-color, var(--doc-headings));
+  font-weight: var(--web-h1-weight, 800);
+}
+
+body[data-theme="web-original"] .paper-sheet :is(h2.doc-element, .doc-h2) {
+  color: var(--web-h2-color, var(--doc-headings));
+  font-weight: var(--web-h2-weight, 700);
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+body[data-theme="web-original"] .paper-sheet :is(h3.doc-element, .doc-h3) {
+  color: var(--web-h3-color, var(--doc-headings));
+}
+
+body[data-theme="web-original"] .paper-sheet :is(h4.doc-element, .doc-h4) {
+  color: var(--web-h4-color, var(--doc-headings));
+  font-family: var(--doc-font-h4, var(--doc-font-heading));
+}
+
+body[data-theme="web-original"] .paper-sheet blockquote.doc-element {
+  background: transparent;
+  border-left: 2.5pt solid var(--doc-primary, #0284c7);
+  border-radius: 0;
 }
 
 /* Multi-Source Chapter-Specific Style Scoping (only in web-original mode) */

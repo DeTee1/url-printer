@@ -22,10 +22,11 @@
   /* ==========================================================================
      1. ROBUST OFFLINE VECTOR SVG / BITMAP QR CODE GENERATOR
      Full Reed-Solomon Byte-mode Implementation with ISO/IEC 18004 Standard
+     (Versions 1-40, Multi-block Interleaving, 8-Mask Penalty Selection, UTF-8)
      ========================================================================== */
   class QRGenerator {
-    static _initGF() {
-      if (this._gfInit) return;
+    static _initTables() {
+      if (this._tablesInit) return;
       this.EXP = new Uint8Array(512);
       this.LOG = new Uint8Array(256);
       let x = 1;
@@ -35,7 +36,26 @@
         this.LOG[x] = i;
         x = (x << 1) ^ (x >= 128 ? 0x11d : 0);
       }
-      this._gfInit = true;
+
+      // [ecCodewordsPerBlock, numBlocks] for Versions 1..40 (ISO/IEC 18004 Table 9)
+      this.EC_BLOCKS = {
+        L: [
+          null,
+          [7, 1], [10, 1], [15, 1], [20, 1], [26, 1], [18, 2], [20, 2], [24, 2], [30, 2], [18, 4],
+          [20, 4], [24, 4], [26, 4], [30, 4], [22, 6], [24, 6], [28, 6], [30, 6], [28, 7], [28, 8],
+          [28, 8], [28, 9], [30, 9], [30, 10], [26, 12], [28, 12], [30, 12], [30, 13], [30, 14], [30, 15],
+          [30, 16], [30, 17], [30, 18], [30, 19], [30, 19], [30, 20], [30, 21], [30, 22], [30, 24], [30, 25]
+        ],
+        M: [
+          null,
+          [10, 1], [16, 1], [26, 1], [18, 2], [24, 2], [16, 4], [18, 4], [22, 4], [22, 5], [26, 5],
+          [30, 5], [22, 8], [22, 9], [24, 9], [24, 10], [28, 10], [28, 11], [26, 13], [26, 14], [26, 16],
+          [26, 17], [28, 17], [28, 18], [28, 20], [28, 21], [28, 23], [28, 25], [28, 26], [28, 28], [28, 29],
+          [28, 31], [28, 33], [28, 35], [28, 37], [28, 38], [28, 40], [28, 43], [28, 45], [28, 47], [28, 49]
+        ]
+      };
+
+      this._tablesInit = true;
     }
 
     static _gfMul(x, y) {
@@ -48,8 +68,8 @@
       for (let i = 0; i < degree; i++) {
         const next = new Array(poly.length + 1).fill(0);
         for (let j = 0; j < poly.length; j++) {
-          next[j] ^= this._gfMul(poly[j], this.EXP[i]);
-          next[j + 1] ^= poly[j];
+          next[j] ^= poly[j];
+          next[j + 1] ^= this._gfMul(poly[j], this.EXP[i]);
         }
         poly = next;
       }
@@ -57,51 +77,313 @@
     }
 
     static _rsEncode(data, numEcBytes) {
-      this._initGF();
+      this._initTables();
       const genPoly = this._rsGenPoly(numEcBytes);
       const res = new Array(numEcBytes).fill(0);
       for (let i = 0; i < data.length; i++) {
         const factor = data[i] ^ res[0];
         res.shift();
         res.push(0);
-        for (let j = 0; j < numEcBytes; j++) {
-          res[j] ^= this._gfMul(genPoly[j], factor);
+        if (factor !== 0) {
+          for (let j = 0; j < numEcBytes; j++) {
+            res[j] ^= this._gfMul(genPoly[j + 1], factor);
+          }
         }
       }
       return res;
     }
 
-    static generateMatrix(text) {
-      this._initGF();
-      const utf8 = unescape(encodeURIComponent(text));
-      const len = utf8.length;
+    static _getAlignmentCoords(version) {
+      if (version <= 1) return [];
+      const num = Math.floor(version / 7) + 2;
+      const size = version * 4 + 17;
+      const first = 6;
+      const last = size - 7;
+      if (num === 2) return [first, last];
+      const step = version === 32 ? 26 : Math.ceil((last - first) / (num - 1) / 2) * 2;
+      const coords = new Array(num);
+      coords[0] = first;
+      for (let i = num - 1; i >= 1; i--) {
+        coords[i] = last - (num - 1 - i) * step;
+      }
+      return coords;
+    }
 
-      let version = 1;
-      let capacity = [17, 32, 53, 78, 106, 134, 154, 192, 230, 271];
-      let ecBytesPerBlock = [7, 10, 15, 20, 26, 36, 40, 48, 60, 72];
+    static _getTotalCodewords(version) {
+      const size = version * 4 + 17;
+      let modules = size * size;
+      // 3 finder patterns + separators (3 * 64 = 192)
+      modules -= 192;
+      // Format info + dark module (31)
+      modules -= 31;
+      // Timing patterns (2 * (size - 16))
+      modules -= 2 * (size - 16);
+      // Alignment patterns
+      if (version >= 2) {
+        const k = Math.floor(version / 7) + 2;
+        modules -= 25 * (k * k - 3) - 10 * (k - 2);
+      }
+      // Version info for V7..V40
+      if (version >= 7) {
+        modules -= 36;
+      }
+      return Math.floor(modules / 8);
+    }
 
-      for (let v = 0; v < capacity.length; v++) {
-        if (len <= capacity[v]) {
-          version = v + 1;
-          break;
+    static _encodeUTF8(text) {
+      const str = String(text ?? '');
+      if (typeof TextEncoder !== 'undefined') {
+        return Array.from(new TextEncoder().encode(str));
+      }
+      const utf8 = unescape(encodeURIComponent(str));
+      const bytes = [];
+      for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));
+      return bytes;
+    }
+
+    static _drawFunctionPatterns(matrix, isFunction, version) {
+      const size = matrix.length;
+      const setFunctionModule = (r, c, val) => {
+        matrix[r][c] = val ? 1 : 0;
+        isFunction[r][c] = true;
+      };
+
+      // 1. Finder patterns + 1-module white separators
+      const drawFinder = (r0, c0) => {
+        for (let dy = -1; dy <= 7; dy++) {
+          for (let dx = -1; dx <= 7; dx++) {
+            const r = r0 + dy;
+            const c = c0 + dx;
+            if (r >= 0 && r < size && c >= 0 && c < size) {
+              const inOuter = dy >= 0 && dy <= 6 && dx >= 0 && dx <= 6;
+              const isDark = inOuter && (dy === 0 || dy === 6 || dx === 0 || dx === 6 || (dy >= 2 && dy <= 4 && dx >= 2 && dx <= 4));
+              setFunctionModule(r, c, isDark ? 1 : 0);
+            }
+          }
         }
-        if (v === capacity.length - 1) version = 10;
+      };
+      drawFinder(0, 0);
+      drawFinder(0, size - 7);
+      drawFinder(size - 7, 0);
+
+      // 2. Timing patterns
+      for (let i = 8; i < size - 8; i++) {
+        const bit = i % 2 === 0 ? 1 : 0;
+        if (!isFunction[6][i]) setFunctionModule(6, i, bit);
+        if (!isFunction[i][6]) setFunctionModule(i, 6, bit);
       }
 
-      const numDataBytes = capacity[version - 1];
-      const numEcBytes = ecBytesPerBlock[version - 1];
-      const moduleCount = version * 4 + 17;
+      // 3. Alignment patterns (skipping the 3 finder corners)
+      const alignCoords = this._getAlignmentCoords(version);
+      for (let i = 0; i < alignCoords.length; i++) {
+        for (let j = 0; j < alignCoords.length; j++) {
+          if ((i === 0 && j === 0) || (i === 0 && j === alignCoords.length - 1) || (i === alignCoords.length - 1 && j === 0)) {
+            continue;
+          }
+          const r0 = alignCoords[i];
+          const c0 = alignCoords[j];
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+              const isDark = Math.abs(dy) === 2 || Math.abs(dx) === 2 || (dy === 0 && dx === 0);
+              setFunctionModule(r0 + dy, c0 + dx, isDark ? 1 : 0);
+            }
+          }
+        }
+      }
+
+      // 4. Dark module & reserve Format Information slots
+      setFunctionModule(size - 8, 8, 1);
+      for (let i = 0; i <= 8; i++) {
+        if (!isFunction[8][i]) setFunctionModule(8, i, 0);
+        if (!isFunction[i][8]) setFunctionModule(i, 8, 0);
+      }
+      for (let i = 0; i < 8; i++) {
+        if (!isFunction[8][size - 1 - i]) setFunctionModule(8, size - 1 - i, 0);
+      }
+      for (let i = 0; i < 7; i++) {
+        if (!isFunction[size - 1 - i][8]) setFunctionModule(size - 1 - i, 8, 0);
+      }
+
+      // 5. Version Information (for Version >= 7)
+      if (version >= 7) {
+        let rem = version;
+        for (let i = 0; i < 12; i++) {
+          rem = (rem << 1) ^ ((rem >> 11) * 0x1F25);
+        }
+        const verBits = (version << 12) | rem;
+        for (let i = 0; i < 18; i++) {
+          const bit = (verBits >> i) & 1;
+          const a = size - 11 + (i % 3);
+          const b = Math.floor(i / 3);
+          setFunctionModule(a, b, bit);
+          setFunctionModule(b, a, bit);
+        }
+      }
+    }
+
+    static _drawFormatBits(matrix, ecLevel, mask) {
+      const size = matrix.length;
+      const ecIndicator = ecLevel === 'L' ? 1 : ecLevel === 'M' ? 0 : ecLevel === 'Q' ? 3 : 2;
+      const data = (ecIndicator << 3) | mask;
+      let rem = data;
+      for (let i = 0; i < 10; i++) {
+        rem = (rem << 1) ^ ((rem >> 9) * 0x537);
+      }
+      const bits = ((data << 10) | rem) ^ 0x5412;
+
+      // Top-left copy (LSB i=0..14)
+      for (let i = 0; i <= 5; i++) matrix[i][8] = (bits >> i) & 1;
+      matrix[7][8] = (bits >> 6) & 1;
+      matrix[8][8] = (bits >> 7) & 1;
+      matrix[8][7] = (bits >> 8) & 1;
+      for (let i = 9; i < 15; i++) matrix[8][14 - i] = (bits >> i) & 1;
+
+      // Top-right and bottom-left copy (LSB i=0..14)
+      for (let i = 0; i < 8; i++) matrix[8][size - 1 - i] = (bits >> i) & 1;
+      for (let i = 8; i < 15; i++) matrix[size - 15 + i][8] = (bits >> i) & 1;
+
+      // Always keep dark module = 1
+      matrix[size - 8][8] = 1;
+    }
+
+    static _maskBit(mask, r, c) {
+      switch (mask) {
+        case 0: return (r + c) % 2 === 0;
+        case 1: return r % 2 === 0;
+        case 2: return c % 3 === 0;
+        case 3: return (r + c) % 3 === 0;
+        case 4: return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0;
+        case 5: return ((r * c) % 2) + ((r * c) % 3) === 0;
+        case 6: return (((r * c) % 2) + ((r * c) % 3)) % 2 === 0;
+        case 7: return (((r + c) % 2) + ((r * c) % 3)) % 2 === 0;
+        default: return (r + c) % 2 === 0;
+      }
+    }
+
+    static _computePenalty(matrix) {
+      const size = matrix.length;
+      let penalty = 0;
+
+      // Rule 1 & Rule 3 (runs of 5+ and finder-like patterns in rows & cols)
+      const scoreLine = (getMod) => {
+        let runColor = getMod(0);
+        let runLen = 1;
+        for (let i = 1; i < size; i++) {
+          const c = getMod(i);
+          if (c === runColor) {
+            runLen++;
+            if (runLen === 5) penalty += 3;
+            else if (runLen > 5) penalty += 1;
+          } else {
+            runColor = c;
+            runLen = 1;
+          }
+        }
+        // Check 1:1:3:1:1 with 4 light modules on either side
+        for (let i = 0; i <= size - 11; i++) {
+          if (
+            getMod(i) === 1 && getMod(i + 1) === 0 && getMod(i + 2) === 1 &&
+            getMod(i + 3) === 1 && getMod(i + 4) === 1 && getMod(i + 5) === 0 && getMod(i + 6) === 1 &&
+            ((i + 10 < size && getMod(i + 7) === 0 && getMod(i + 8) === 0 && getMod(i + 9) === 0 && getMod(i + 10) === 0) ||
+             (i >= 4 && getMod(i - 1) === 0 && getMod(i - 2) === 0 && getMod(i - 3) === 0 && getMod(i - 4) === 0))
+          ) {
+            penalty += 40;
+          }
+        }
+      };
+
+      for (let r = 0; r < size; r++) scoreLine(c => matrix[r][c]);
+      for (let c = 0; c < size; c++) scoreLine(r => matrix[r][c]);
+
+      // Rule 2: 2x2 solid blocks
+      for (let r = 0; r < size - 1; r++) {
+        for (let c = 0; c < size - 1; c++) {
+          const v = matrix[r][c];
+          if (v === matrix[r][c + 1] && v === matrix[r + 1][c] && v === matrix[r + 1][c + 1]) {
+            penalty += 3;
+          }
+        }
+      }
+
+      // Rule 4: Dark/light balance
+      let dark = 0;
+      for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
+          if (matrix[r][c]) dark++;
+        }
+      }
+      const total = size * size;
+      const k = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
+      if (k > 0) penalty += k * 10;
+
+      return penalty;
+    }
+
+    static generateMatrix(text, errorCorrectLevel = 'M') {
+      this._initTables();
+      const utf8Bytes = this._encodeUTF8(text || 'https://urlprinter.studio');
+      const len = utf8Bytes.length;
+
+      // Select EC Level and smallest Version (1..40) that fits byte stream
+      let ecLevel = (errorCorrectLevel === 'L' || errorCorrectLevel === 'M') ? errorCorrectLevel : 'M';
+      let version = 0;
+      let totalCodewords = 0;
+      let ecPerBlock = 0;
+      let numBlocks = 0;
+      let numDataBytes = 0;
+
+      const findVersion = (lvl) => {
+        const table = this.EC_BLOCKS[lvl];
+        for (let v = 1; v <= 40; v++) {
+          const totCw = this._getTotalCodewords(v);
+          const [ecCw, blocks] = table[v];
+          const dataCw = totCw - ecCw * blocks;
+          const countBits = v < 10 ? 8 : 16;
+          const requiredBits = 4 + countBits + len * 8;
+          if (requiredBits <= dataCw * 8) {
+            version = v;
+            totalCodewords = totCw;
+            ecPerBlock = ecCw;
+            numBlocks = blocks;
+            numDataBytes = dataCw;
+            ecLevel = lvl;
+            return true;
+          }
+        }
+        return false;
+      };
+
+      if (!findVersion(ecLevel)) {
+        if (ecLevel !== 'L') findVersion('L');
+      }
+
+      // If text exceeds max QR capacity (2953 bytes), truncate safely to fit V40-L
+      let payloadBytes = utf8Bytes;
+      if (!version) {
+        ecLevel = 'L';
+        version = 40;
+        totalCodewords = this._getTotalCodewords(40);
+        [ecPerBlock, numBlocks] = this.EC_BLOCKS.L[40];
+        numDataBytes = totalCodewords - ecPerBlock * numBlocks;
+        payloadBytes = utf8Bytes.slice(0, numDataBytes - 3);
+      }
 
       const bits = [];
       const appendBits = (val, count) => {
         for (let i = count - 1; i >= 0; i--) bits.push((val >> i) & 1);
       };
 
-      appendBits(4, 4);
-      appendBits(len, version < 10 ? 8 : 16);
-      for (let i = 0; i < len; i++) appendBits(utf8.charCodeAt(i), 8);
+      // Mode indicator: 0100 (Byte mode)
+      appendBits(0b0100, 4);
+      // Character count indicator (8 bits for V1-9, 16 bits for V10-40)
+      appendBits(payloadBytes.length, version < 10 ? 8 : 16);
+      for (let i = 0; i < payloadBytes.length; i++) {
+        appendBits(payloadBytes[i], 8);
+      }
 
+      // Terminator (up to 4 zero bits)
       appendBits(0, Math.min(4, numDataBytes * 8 - bits.length));
+      // Pad to byte boundary
       while (bits.length % 8 !== 0) bits.push(0);
 
       const dataBytes = [];
@@ -111,6 +393,7 @@
         dataBytes.push(b);
       }
 
+      // Pad codewords alternating 0xEC, 0x11
       const pad = [0xEC, 0x11];
       let padIdx = 0;
       while (dataBytes.length < numDataBytes) {
@@ -118,76 +401,64 @@
         padIdx++;
       }
 
-      const ecBytes = this._rsEncode(dataBytes, numEcBytes);
-      const totalCodewords = dataBytes.concat(ecBytes);
+      // Split into Group 1 and Group 2 blocks and compute Reed-Solomon EC for each block
+      const numGroup2 = numDataBytes % numBlocks;
+      const numGroup1 = numBlocks - numGroup2;
+      const dataPerBlock1 = Math.floor(numDataBytes / numBlocks);
+      const dataPerBlock2 = dataPerBlock1 + 1;
 
-      const matrix = Array.from({ length: moduleCount }, () => Array(moduleCount).fill(null));
+      const dataBlocks = [];
+      const ecBlocks = [];
+      let offset = 0;
+      for (let b = 0; b < numBlocks; b++) {
+        const blockLen = b < numGroup1 ? dataPerBlock1 : dataPerBlock2;
+        const blockData = dataBytes.slice(offset, offset + blockLen);
+        offset += blockLen;
+        dataBlocks.push(blockData);
+        ecBlocks.push(this._rsEncode(blockData, ecPerBlock));
+      }
 
-      const addFinder = (r0, c0) => {
-        for (let r = 0; r < 7; r++) {
-          for (let c = 0; c < 7; c++) {
-            if (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
-              matrix[r0 + r][c0 + c] = 1;
-            } else {
-              matrix[r0 + r][c0 + c] = 0;
-            }
+      // Interleave data codewords, then interleave EC codewords
+      const interleaved = [];
+      const maxDataBlockLen = numGroup2 > 0 ? dataPerBlock2 : dataPerBlock1;
+      for (let i = 0; i < maxDataBlockLen; i++) {
+        for (let b = 0; b < numBlocks; b++) {
+          if (i < dataBlocks[b].length) {
+            interleaved.push(dataBlocks[b][i]);
           }
         }
-      };
-      addFinder(0, 0);
-      addFinder(0, moduleCount - 7);
-      addFinder(moduleCount - 7, 0);
-
-      for (let i = 0; i < 8; i++) {
-        if (moduleCount - 8 >= 0) {
-          matrix[7][i] = matrix[i][7] = 0;
-          matrix[7][moduleCount - 1 - i] = matrix[i][moduleCount - 8] = 0;
-          matrix[moduleCount - 8][i] = matrix[moduleCount - 1 - i][7] = 0;
+      }
+      for (let i = 0; i < ecPerBlock; i++) {
+        for (let b = 0; b < numBlocks; b++) {
+          interleaved.push(ecBlocks[b][i]);
         }
       }
-
-      if (version >= 2) {
-        const alignPos = [6, 18, 22, 26, 30, 34, 38, 42, 46, 50][version - 1];
-        const addAlign = (r0, c0) => {
-          for (let r = -2; r <= 2; r++) {
-            for (let c = -2; c <= 2; c++) {
-              if (Math.abs(r) === 2 || Math.abs(c) === 2 || (r === 0 && c === 0)) {
-                if (matrix[r0 + r][c0 + c] === null) matrix[r0 + r][c0 + c] = 1;
-              } else {
-                if (matrix[r0 + r][c0 + c] === null) matrix[r0 + r][c0 + c] = 0;
-              }
-            }
-          }
-        };
-        addAlign(alignPos, alignPos);
-      }
-
-      for (let i = 8; i < moduleCount - 8; i++) {
-        if (matrix[6][i] === null) matrix[6][i] = i % 2 === 0 ? 1 : 0;
-        if (matrix[i][6] === null) matrix[i][6] = i % 2 === 0 ? 1 : 0;
-      }
-
-      matrix[moduleCount - 8][8] = 1;
 
       const allBits = [];
-      totalCodewords.forEach(byte => {
+      for (let i = 0; i < interleaved.length; i++) {
+        const byte = interleaved[i];
         for (let b = 7; b >= 0; b--) allBits.push((byte >> b) & 1);
-      });
+      }
 
+      const moduleCount = version * 4 + 17;
+      const baseMatrix = Array.from({ length: moduleCount }, () => new Uint8Array(moduleCount));
+      const isFunction = Array.from({ length: moduleCount }, () => new Array(moduleCount).fill(false));
+
+      this._drawFunctionPatterns(baseMatrix, isFunction, version);
+
+      // Place data bits in 2-column upward/downward zig-zag skipping function modules
       let bitIdx = 0;
       let right = moduleCount - 1;
       let upward = true;
 
       while (right > 0) {
-        if (right === 6) right--;
+        if (right === 6) right--; // Skip vertical timing pattern column
         for (let i = 0; i < moduleCount; i++) {
           const r = upward ? moduleCount - 1 - i : i;
           for (let colOffset = 0; colOffset < 2; colOffset++) {
             const c = right - colOffset;
-            if (matrix[r][c] === null) {
-              const bit = bitIdx < allBits.length ? allBits[bitIdx++] : 0;
-              const mask = (r + c) % 2 === 0;
-              matrix[r][c] = (bit ^ (mask ? 1 : 0)) ? 1 : 0;
+            if (!isFunction[r][c]) {
+              baseMatrix[r][c] = bitIdx < allBits.length ? allBits[bitIdx++] : 0;
             }
           }
         }
@@ -195,50 +466,136 @@
         upward = !upward;
       }
 
-      const formatBits = [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0];
-      for (let i = 0; i < 6; i++) matrix[8][i] = formatBits[i];
-      matrix[8][7] = formatBits[6];
-      matrix[8][8] = formatBits[7];
-      matrix[7][8] = formatBits[8];
-      for (let i = 9; i < 15; i++) matrix[14 - i][8] = formatBits[i];
+      // Evaluate all 8 masks and choose the one with lowest penalty
+      let bestMask = 0;
+      let bestPenalty = Infinity;
+      let bestMatrix = null;
 
-      for (let i = 0; i < 8; i++) matrix[moduleCount - 1 - i][8] = formatBits[i];
-      for (let i = 8; i < 15; i++) matrix[8][moduleCount - 15 + i] = formatBits[i];
+      for (let mask = 0; mask < 8; mask++) {
+        const candidate = Array.from({ length: moduleCount }, (_, r) => {
+          const row = new Array(moduleCount);
+          for (let c = 0; c < moduleCount; c++) {
+            let val = baseMatrix[r][c];
+            if (!isFunction[r][c] && this._maskBit(mask, r, c)) {
+              val ^= 1;
+            }
+            row[c] = val;
+          }
+          return row;
+        });
+        this._drawFormatBits(candidate, ecLevel, mask);
+        const penalty = this._computePenalty(candidate);
+        if (penalty < bestPenalty) {
+          bestPenalty = penalty;
+          bestMask = mask;
+          bestMatrix = candidate;
+        }
+      }
 
-      return matrix;
+      return bestMatrix;
     }
 
     static generateSVG(text, options = {}) {
-      const colorDark = options.colorDark || '#0f172a';
+      const colorDark = options.colorDark || '#000000';
       const colorLight = options.colorLight || '#ffffff';
-      const margin = options.margin !== undefined ? options.margin : 2;
+      const margin = options.margin !== undefined ? Math.max(2, options.margin) : 2;
 
       let matrix;
       try {
-        matrix = this.generateMatrix(text || 'https://urlprinter.studio');
+        matrix = this.generateMatrix(text || 'https://urlprinter.studio', options.errorCorrectLevel || 'M');
       } catch (e) {
         console.error('QR Generator error:', e);
-        matrix = this.generateMatrix('https://urlprinter.studio');
+        matrix = this.generateMatrix('https://urlprinter.studio', 'M');
       }
 
       const moduleCount = matrix.length;
       const totalSize = moduleCount + margin * 2;
 
-      let rects = '';
+      let pathData = '';
       for (let r = 0; r < moduleCount; r++) {
         for (let c = 0; c < moduleCount; c++) {
           if (matrix[r][c] === 1) {
-            rects += `<rect x="${c + margin}" y="${r + margin}" width="1" height="1" fill="${colorDark}"/>`;
+            pathData += `M${c + margin},${r + margin}h1v1h-1z`;
           }
         }
       }
 
-      return `<svg viewBox="0 0 ${totalSize} ${totalSize}" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%; display: block;"><rect width="${totalSize}" height="${totalSize}" fill="${colorLight}"/>${rects}</svg>`;
+      return `<svg viewBox="0 0 ${totalSize} ${totalSize}" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" style="width: 100%; height: 100%; display: block; shape-rendering: crispEdges;"><rect width="${totalSize}" height="${totalSize}" fill="${colorLight}"/><path d="${pathData}" fill="${colorDark}" shape-rendering="crispEdges"/></svg>`;
+    }
+
+    static toSVG(text, size = 120, options = {}) {
+      return this.generateSVG(text, options);
+    }
+
+    static renderToCanvas(text, canvas, options = {}) {
+      const size = options.size || 120;
+      const colorDark = options.colorDark || '#000000';
+      const colorLight = options.colorLight || '#ffffff';
+      const margin = options.margin !== undefined ? Math.max(2, options.margin) : 2;
+
+      const qr = this.generateMatrix(text, options.errorCorrectLevel || 'M');
+      const moduleCount = qr.length;
+      const totalModules = moduleCount + margin * 2;
+      const scale = Math.max(1, Math.floor(size / totalModules));
+      const realSize = totalModules * scale;
+
+      canvas.width = realSize;
+      canvas.height = realSize;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+
+      ctx.fillStyle = colorLight;
+      ctx.fillRect(0, 0, realSize, realSize);
+
+      ctx.fillStyle = colorDark;
+      for (let r = 0; r < moduleCount; r++) {
+        for (let c = 0; c < moduleCount; c++) {
+          if (qr[r][c]) {
+            ctx.fillRect((c + margin) * scale, (r + margin) * scale, scale, scale);
+          }
+        }
+      }
+      return canvas;
+    }
+
+    static toDataURL(text, size = 140) {
+      const canvas = document.createElement('canvas');
+      this.renderToCanvas(text, canvas, { size });
+      return canvas.toDataURL('image/png');
+    }
+
+    static _normalizeUrl(rawUrl, baseUrl = '') {
+      let u = (rawUrl || '').trim();
+      if (!u || u.startsWith('#') || /^javascript:/i.test(u) || /^data:/i.test(u)) return '';
+      if (u.startsWith('//')) {
+        u = 'https:' + u;
+      } else if (/^www\./i.test(u)) {
+        u = 'https://' + u;
+      } else if (!/^(?:https?:|mailto:|tel:)/i.test(u) && baseUrl) {
+        try {
+          u = new URL(u, baseUrl).href;
+        } catch (e) {}
+      }
+      return u;
     }
 
     static extractAndCreateQRCards(containerElement) {
+      const defaultBaseUrl = containerElement.querySelector('[data-chapter-url]')?.getAttribute('data-chapter-url') || '';
+
+      // 0. Refresh any pre-existing QR cards (e.g. from saved projects or video callouts) so their SVG is always valid
+      containerElement.querySelectorAll('.doc-qr-card, .doc-qr-inline-card').forEach(card => {
+        const wrapper = card.querySelector('.doc-qr-canvas-wrapper');
+        const rawHref = card.getAttribute('data-href') || card.querySelector('a[href]')?.getAttribute('href') || card.querySelector('.doc-qr-url')?.textContent || '';
+        const baseUrl = card.getAttribute('data-chapter-url') || defaultBaseUrl;
+        const normUrl = this._normalizeUrl(rawHref, baseUrl);
+        if (wrapper && normUrl) {
+          wrapper.innerHTML = this.generateSVG(normUrl, { margin: 2 });
+        }
+      });
+
       // 1. Audio and Podcast elements -> QR Cards
       containerElement.querySelectorAll('audio, .audio-player, a[href$=".mp3"], a[href$=".wav"], a[href*="soundcloud.com"], a[href*="spotify.com"]').forEach(audioEl => {
+        if (audioEl.closest('.doc-qr-card') || audioEl.closest('.doc-qr-inline-card')) return;
         let audioSrc = '';
         let audioTitle = 'Zvuková nahrávka';
 
@@ -250,46 +607,54 @@
           audioTitle = audioEl.textContent.trim() || 'Zvuková ukázka';
         }
 
-        if (audioSrc && !audioSrc.startsWith('#') && !audioSrc.startsWith('javascript:')) {
+        const baseUrl = audioEl.closest('[data-chapter-url]')?.getAttribute('data-chapter-url') || defaultBaseUrl;
+        const normAudioSrc = this._normalizeUrl(audioSrc, baseUrl);
+
+        if (normAudioSrc) {
           const card = document.createElement('div');
           card.className = 'doc-callout doc-qr-card doc-element';
           card.setAttribute('data-block-type', 'qr-card');
-          card.setAttribute('data-href', audioSrc);
+          card.setAttribute('data-href', normAudioSrc);
 
-          const svg = this.generateSVG(audioSrc, { margin: 1 });
+          const svg = this.generateSVG(normAudioSrc, { margin: 2 });
           card.innerHTML = `
             <div class="doc-qr-canvas-wrapper">${svg}</div>
             <div class="doc-qr-info">
               <span class="doc-qr-badge">🎧 Zvuková ukázka</span>
               <div class="doc-qr-title">${this._escapeHTML(audioTitle)}</div>
-              <div class="doc-qr-url">${this._escapeHTML(audioSrc)}</div>
+              <div class="doc-qr-url">${this._escapeHTML(normAudioSrc)}</div>
             </div>
           `;
           audioEl.replaceWith(card);
         }
       });
 
-      // 2. Video Callouts without QR codes -> inject QR Code
+      // 2. Video Callouts -> inject or refresh QR Code
       containerElement.querySelectorAll('.doc-callout-video').forEach(videoCard => {
-        if (!videoCard.querySelector('.doc-qr-canvas-wrapper')) {
-          const link = videoCard.querySelector('a[href]');
-          const videoUrl = link ? link.getAttribute('href') : '';
-          if (videoUrl) {
-            const svg = this.generateSVG(videoUrl, { margin: 1 });
-            const qrWrapper = document.createElement('div');
-            qrWrapper.className = 'doc-qr-canvas-wrapper';
-            qrWrapper.style.width = '20mm';
-            qrWrapper.style.height = '20mm';
-            qrWrapper.style.float = 'left';
-            qrWrapper.style.margin = '0 12px 8px 0';
-            qrWrapper.innerHTML = svg;
-            
-            const header = videoCard.querySelector('.doc-callout-header');
-            if (header && header.nextSibling) {
-              videoCard.insertBefore(qrWrapper, header.nextSibling);
-            } else {
-              videoCard.prepend(qrWrapper);
-            }
+        const link = videoCard.querySelector('a[href]');
+        const rawVideoUrl = link ? link.getAttribute('href') : '';
+        const baseUrl = videoCard.getAttribute('data-chapter-url') || defaultBaseUrl;
+        const videoUrl = this._normalizeUrl(rawVideoUrl, baseUrl);
+        if (!videoUrl) return;
+
+        const existingWrapper = videoCard.querySelector('.doc-qr-canvas-wrapper');
+        const svg = this.generateSVG(videoUrl, { margin: 2 });
+        if (existingWrapper) {
+          existingWrapper.innerHTML = svg;
+        } else {
+          const qrWrapper = document.createElement('div');
+          qrWrapper.className = 'doc-qr-canvas-wrapper';
+          qrWrapper.style.width = '22mm';
+          qrWrapper.style.height = '22mm';
+          qrWrapper.style.float = 'left';
+          qrWrapper.style.margin = '0 12px 8px 0';
+          qrWrapper.innerHTML = svg;
+          
+          const header = videoCard.querySelector('.doc-callout-header');
+          if (header && header.nextSibling) {
+            videoCard.insertBefore(qrWrapper, header.nextSibling);
+          } else {
+            videoCard.prepend(qrWrapper);
           }
         }
       });
@@ -299,6 +664,7 @@
       
       let linkCounter = 1;
       const seenUrlsInDocument = new Map();
+      const processedLinks = new WeakSet();
 
       blocks.forEach(block => {
         // Skip elements that are inside other QR cards, video cards or TOC
@@ -306,9 +672,13 @@
           return;
         }
 
+        const baseUrl = block.getAttribute('data-chapter-url') || block.closest('[data-chapter-url]')?.getAttribute('data-chapter-url') || defaultBaseUrl;
+
         const linksInBlock = Array.from(block.querySelectorAll('a[href]')).filter(link => {
-          const href = (link.getAttribute('href') || '').trim();
-          return href && !href.startsWith('#') && !href.startsWith('javascript:');
+          if (processedLinks.has(link)) return false;
+          if (link.closest('.doc-qr-card') || link.closest('.doc-qr-inline-card') || link.closest('.doc-callout-video')) return false;
+          const norm = this._normalizeUrl(link.getAttribute('href'), baseUrl);
+          return !!norm;
         });
 
         if (linksInBlock.length === 0) return;
@@ -316,7 +686,11 @@
         // Collect distinct URLs in this specific block
         const blockLinks = [];
         linksInBlock.forEach(link => {
-          const href = link.getAttribute('href').trim();
+          processedLinks.add(link);
+          const href = this._normalizeUrl(link.getAttribute('href'), baseUrl);
+          if (!href) return;
+          link.setAttribute('href', href);
+
           let num;
           if (seenUrlsInDocument.has(href)) {
             num = seenUrlsInDocument.get(href);
@@ -346,18 +720,31 @@
           link.querySelector('.qr-ref-sup').textContent = ` [QR #${num}]`;
         });
 
-        // Insert QR code card(s) immediately after this block
+        // Insert QR code card(s) immediately after this block (skip if an identical QR card is already nextSibling)
         if (blockLinks.length > 0) {
           const insertTarget = (block.tagName === 'LI' && block.parentElement) ? block.parentElement : block;
 
           blockLinks.forEach(item => {
+            // Check if a card for this URL already immediately follows insertTarget
+            let nextEl = insertTarget.nextElementSibling;
+            while (nextEl && (nextEl.classList.contains('doc-qr-inline-card') || nextEl.classList.contains('doc-qr-card'))) {
+              const existingUrl = nextEl.getAttribute('data-href') || nextEl.querySelector('a[href]')?.getAttribute('href') || '';
+              if (existingUrl === item.url) {
+                const wrap = nextEl.querySelector('.doc-qr-canvas-wrapper');
+                if (wrap) wrap.innerHTML = this.generateSVG(item.url, { margin: 2 });
+                return;
+              }
+              nextEl = nextEl.nextElementSibling;
+            }
+
             const card = document.createElement('div');
             card.className = 'doc-callout doc-qr-inline-card doc-element';
             card.setAttribute('data-block-type', 'callout');
             card.setAttribute('data-callout-type', 'qr');
+            card.setAttribute('data-href', item.url);
             card.setAttribute('data-block-id', 'blk_qr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4));
 
-            const svg = this.generateSVG(item.url, { margin: 1 });
+            const svg = this.generateSVG(item.url, { margin: 2 });
             card.innerHTML = `
               <div class="doc-qr-canvas-wrapper">${svg}</div>
               <div class="doc-qr-info">
@@ -376,8 +763,6 @@
         }
       });
     }
-
-
 
     static _escapeHTML(str) {
       return (str || '').replace(/[&<>"']/g, m => ({
@@ -513,13 +898,19 @@
       }
 
       // Short cookie-blocking or JS-disabled interstitial
+      const lowerBody = bodyText.toLowerCase();
       if (bodyText.length < 900) {
-        const lowerBody = bodyText.toLowerCase();
         if (lowerBody.includes('cookies must be enabled') ||
             lowerBody.includes('enable javascript and cookies') ||
             lowerBody.includes('něco nám brání v načtení stránky')) {
           return true;
         }
+      }
+
+      // Czech portal cookie consent walls (e.g. iDNES / MAFRA nastaveni-souhlasu)
+      if (lowerBody.includes('abyste mohli pokračovat, potřebujeme vědět, jakou formou vám můžeme zobrazovat reklamu') ||
+          lowerBody.includes('vámi zvolené nastavení neobsahuje souhlas se zobrazováním cílené reklamy')) {
+        return true;
       }
 
       return false;
@@ -528,27 +919,52 @@
     static async _decodeResponseHtml(res) {
       try {
         const buffer = await res.arrayBuffer();
-        // Check content-type header first
+        const bytes = new Uint8Array(buffer);
+
+        // 1. Strictly test if the byte stream is valid UTF-8.
+        // Any legacy 8-bit Czech encoding (windows-1250 / iso-8859-2) containing diacritics
+        // has standalone high bytes (0x80-0xFF) that are illegal in UTF-8 and will throw with fatal: true.
+        // Conversely, when a rendering proxy (e.g. Jina Reader) transcodes a windows-1250 page to UTF-8
+        // while keeping <meta charset="windows-1250"> in the HTML, fatal UTF-8 decode succeeds and MUST
+        // be used so we don't corrupt valid UTF-8 into "VlĂˇda, co udolĂˇ" mojibake.
+        try {
+          const utf8Text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          const fffdCount = (utf8Text.match(/\uFFFD/g) || []).length;
+          if (fffdCount > 2) {
+            throw new Error('Proxy returned corrupted UTF-8 with replacement characters');
+          }
+          return utf8Text;
+        } catch (utf8Err) {
+          if (utf8Err.message === 'Proxy returned corrupted UTF-8 with replacement characters') {
+            throw utf8Err;
+          }
+          // Byte stream is NOT valid UTF-8 -> decode using legacy 8-bit charset
+        }
+
+        // 2. Detect which 8-bit charset to use from HTTP header or <meta charset> tag
         const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
         let encoding = '';
         const ctMatch = ct.match(/charset=([a-zA-Z0-9_-]+)/i);
         if (ctMatch) encoding = ctMatch[1].toLowerCase().trim();
 
         if (!encoding || encoding === 'utf-8' || encoding === 'utf8') {
-          // Probe first 2048 bytes for meta charset tag
-          const preview = new TextDecoder('ascii').decode(buffer.slice(0, 2048));
+          const preview = new TextDecoder('ascii').decode(bytes.slice(0, 4096));
           const m = preview.match(/<meta[^>]+charset=["']?([a-zA-Z0-9_-]+)/i) ||
                     preview.match(/<meta[^>]+content=["'][^"']*charset=([a-zA-Z0-9_-]+)/i);
           if (m) encoding = m[1].toLowerCase().trim();
         }
 
-        if (encoding === 'windows-1250' || encoding === 'cp1250' || encoding === 'win-1250') {
-          return new TextDecoder('windows-1250').decode(buffer);
-        } else if (encoding === 'iso-8859-2' || encoding === 'latin2') {
-          return new TextDecoder('iso-8859-2').decode(buffer);
+        if (encoding === 'iso-8859-2' || encoding === 'latin2') {
+          return new TextDecoder('iso-8859-2').decode(bytes);
+        } else if (encoding === 'windows-1252' || encoding === 'iso-8859-1' || encoding === 'latin1') {
+          return new TextDecoder('windows-1252').decode(bytes);
         }
-        return new TextDecoder('utf-8').decode(buffer);
+        // Default fallback for non-UTF-8 Central European raw byte streams (windows-1250 / cp1250)
+        return new TextDecoder('windows-1250').decode(bytes);
       } catch (e) {
+        if (e.message === 'Proxy returned corrupted UTF-8 with replacement characters') {
+          throw e;
+        }
         return await res.text();
       }
     }
@@ -669,6 +1085,13 @@
             await this._inlineExternalStylesheets(doc, baseUrl);
 
             const sanitized = this.sanitizeRawHTML(doc.documentElement.outerHTML, cleanUrl, preserveStyles);
+            const checkDiv = document.createElement('div');
+            checkDiv.innerHTML = sanitized.htmlContent || '';
+            checkDiv.querySelectorAll('h1, .doc-source-meta, figure').forEach(el => el.remove());
+            const bodyTextLen = checkDiv.textContent.trim().length;
+            if (bodyTextLen < 40 && i < proxies.length - 1) {
+              throw new Error('Proxy returned shell without article body text');
+            }
             sanitized.rawHtml = doc.documentElement.outerHTML;
             return sanitized;
           }
@@ -685,13 +1108,22 @@
       if (!doc || !baseUrl) return;
       try {
         const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"], link[rel="preload"][as="style"]'));
-        const candidateLinks = links.filter(l => {
+        const filteredLinks = links.filter(l => {
           const href = l.getAttribute('href') || '';
           if (!href) return false;
           if (href.includes('fonts.googleapis.com') || href.includes('fonts.bunny.net') || href.includes('use.typekit.net')) return false;
           return true;
-        }).slice(0, 6);
+        });
 
+        // Prioritize theme and main stylesheets when a page loads many bundles (e.g. Substack)
+        filteredLinks.sort((a, b) => {
+          const ha = (a.getAttribute('href') || '').toLowerCase();
+          const hb = (b.getAttribute('href') || '').toLowerCase();
+          const score = (h) => (h.includes('theme') || h.includes('main') || h.includes('article') || h.includes('post') ? 1 : 0);
+          return score(hb) - score(ha);
+        });
+
+        const candidateLinks = filteredLinks.slice(0, 8);
         if (candidateLinks.length === 0) return;
 
         const promises = candidateLinks.map(async (l) => {
@@ -708,13 +1140,22 @@
             } catch (e) {}
 
             if (!cssText || cssText.length < 20 || cssText.includes('<html')) {
-              try {
-                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(absoluteUrl)}`;
-                const pRes = await this.fetchWithTimeout(proxyUrl, {}, 2500);
-                if (pRes.ok) {
-                  cssText = await pRes.text();
-                }
-              } catch (err) {}
+              const cssProxyUrls = [
+                `https://api.allorigins.win/raw?url=${encodeURIComponent(absoluteUrl)}`,
+                `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(absoluteUrl)}`
+              ];
+              for (const proxyUrl of cssProxyUrls) {
+                try {
+                  const pRes = await this.fetchWithTimeout(proxyUrl, {}, 2500);
+                  if (pRes.ok) {
+                    const txt = await pRes.text();
+                    if (txt && txt.length > 20 && !txt.includes('<html')) {
+                      cssText = txt;
+                      break;
+                    }
+                  }
+                } catch (err) {}
+              }
             }
 
             if (cssText && cssText.length > 20 && !cssText.includes('<html')) {
@@ -740,6 +1181,201 @@
       } catch (e) {}
     }
 
+    static _quillDeltaToHtml(ops) {
+      if (!Array.isArray(ops) || ops.length === 0) return '';
+      const blocks = [];
+      let currentLineHtml = '';
+      let activeListType = null;
+      let listItems = [];
+
+      const flushList = () => {
+        if (listItems.length > 0 && activeListType) {
+          const tag = activeListType === 'ordered' ? 'ol' : 'ul';
+          blocks.push(`<${tag}>${listItems.join('')}</${tag}>`);
+          listItems = [];
+          activeListType = null;
+        }
+      };
+
+      const flushLine = (lineAttrs = {}) => {
+        const trimmed = currentLineHtml.trim();
+        currentLineHtml = '';
+        if (!trimmed) return;
+
+        if (lineAttrs && lineAttrs.list) {
+          const listType = lineAttrs.list === 'ordered' ? 'ordered' : 'bullet';
+          if (activeListType && activeListType !== listType) flushList();
+          activeListType = listType;
+          listItems.push(`<li>${trimmed}</li>`);
+          return;
+        }
+
+        flushList();
+
+        if (lineAttrs && lineAttrs.header) {
+          const hLevel = Math.min(Math.max(parseInt(lineAttrs.header, 10) || 2, 1), 6);
+          blocks.push(`<h${hLevel}>${trimmed}</h${hLevel}>`);
+          return;
+        }
+
+        if (lineAttrs && lineAttrs.blockquote) {
+          blocks.push(`<blockquote><p>${trimmed}</p></blockquote>`);
+          return;
+        }
+
+        // Convert standalone short bold lines (typical Quill subheadings) into <h2>
+        const boldOnlyMatch = trimmed.match(/^<strong>([^<]{2,80})<\/strong>$/i);
+        if (boldOnlyMatch && !/[.!?:;]$/.test(boldOnlyMatch[1].trim())) {
+          blocks.push(`<h2>${boldOnlyMatch[1].trim()}</h2>`);
+          return;
+        }
+
+        blocks.push(`<p>${trimmed}</p>`);
+      };
+
+      for (const op of ops) {
+        if (!op) continue;
+        if (typeof op.insert === 'object' && op.insert !== null) {
+          if (op.insert.image) {
+            flushLine();
+            flushList();
+            blocks.push(`<figure><img src="${this._escapeHTML(String(op.insert.image))}"></figure>`);
+          }
+          continue;
+        }
+        if (typeof op.insert !== 'string') continue;
+
+        const attrs = op.attributes || {};
+        if (op.insert === '\n' && (attrs.header || attrs.list || attrs.blockquote || attrs['code-block'])) {
+          flushLine(attrs);
+          continue;
+        }
+
+        const segments = op.insert.split('\n');
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          if (seg.length > 0) {
+            let html = this._escapeHTML(seg);
+            if (attrs.code) html = `<code>${html}</code>`;
+            if (attrs.strike) html = `<s>${html}</s>`;
+            if (attrs.underline) html = `<u>${html}</u>`;
+            if (attrs.italic) html = `<em>${html}</em>`;
+            if (attrs.bold) html = `<strong>${html}</strong>`;
+            if (attrs.link) html = `<a href="${this._escapeHTML(String(attrs.link))}">${html}</a>`;
+            currentLineHtml += html;
+          }
+          if (i < segments.length - 1) {
+            const lineAttrs = (i === segments.length - 2 && (attrs.header || attrs.list || attrs.blockquote)) ? attrs : {};
+            flushLine(lineAttrs);
+          }
+        }
+      }
+
+      flushLine();
+      flushList();
+      return blocks.join('\n');
+    }
+
+    static _hydrateSSRStateAndQuill(doc) {
+      if (!doc) return;
+      try {
+        const stateScripts = Array.from(doc.querySelectorAll('script#serverApp-state, script#ng-state, script[type="application/json"]'));
+        for (const script of stateScripts) {
+          const rawText = (script.textContent || '').trim();
+          if (!rawText || rawText.length < 50) continue;
+
+          const unescaped = rawText
+            .replace(/&q;/g, '"')
+            .replace(/&s;/g, "'")
+            .replace(/&a;/g, '&')
+            .replace(/&l;/g, '<')
+            .replace(/&g;/g, '>');
+
+          let parsed;
+          try {
+            parsed = JSON.parse(unescaped);
+          } catch (e) {
+            continue;
+          }
+          if (!parsed || typeof parsed !== 'object') continue;
+
+          // Locate article state entry (e.g. "page/public/articleComponent_article" on Angular Universal sites)
+          let articleObj = parsed['page/public/articleComponent_article'];
+          if (!articleObj) {
+            for (const key of Object.keys(parsed)) {
+              const val = parsed[key];
+              if (val && typeof val === 'object' && (val.text?.ops || val.body || val.serverModel?.body)) {
+                articleObj = val;
+                break;
+              }
+            }
+          }
+          if (!articleObj) continue;
+
+          // Inject author meta if missing from DOM
+          const authorName = articleObj.author?.name || articleObj.serverModel?.author?.name;
+          if (authorName && typeof authorName === 'string' && !doc.querySelector('meta[name="author"]')) {
+            const meta = doc.createElement('meta');
+            meta.setAttribute('name', 'author');
+            meta.setAttribute('content', authorName.trim());
+            (doc.head || doc.documentElement).appendChild(meta);
+          }
+
+          // Extract Quill Delta ops
+          let ops = null;
+          if (Array.isArray(articleObj.text?.ops)) {
+            ops = articleObj.text.ops;
+          } else {
+            const rawBody = articleObj.body || articleObj.serverModel?.body || (typeof articleObj.text === 'string' ? articleObj.text : '');
+            if (typeof rawBody === 'string' && rawBody.includes('"ops"')) {
+              try {
+                const bodyJson = JSON.parse(rawBody);
+                if (Array.isArray(bodyJson.ops)) ops = bodyJson.ops;
+              } catch (e) {}
+            }
+          }
+
+          if (ops && ops.length > 0) {
+            const renderedHtml = this._quillDeltaToHtml(ops);
+            if (renderedHtml) {
+              const targetContainer = doc.querySelector('quill-view, .article--content') || doc.querySelector('app-article-view');
+              if (targetContainer && targetContainer.textContent.trim().length < 150) {
+                targetContainer.innerHTML = `<div class="ql-container ngx-quill-view"><div class="ql-editor">${renderedHtml}</div></div>`;
+              }
+            }
+          }
+        }
+
+        // Fallback: if visible paragraph text in DOM is still sparse (< 150 chars), check JSON-LD articleBody
+        const existingPTextLen = Array.from(doc.querySelectorAll('article p, main p, p')).reduce((acc, p) => acc + p.textContent.trim().length, 0);
+        if (existingPTextLen < 150) {
+          const ldScripts = Array.from(doc.querySelectorAll('script[type="application/ld+json"]'));
+          for (const ld of ldScripts) {
+            try {
+              const data = JSON.parse(ld.textContent || '');
+              const items = Array.isArray(data) ? data : (Array.isArray(data?.['@graph']) ? data['@graph'] : [data]);
+              for (const item of items) {
+                if (item && typeof item.articleBody === 'string' && item.articleBody.trim().length > 200) {
+                  const target = doc.querySelector('article, main, [itemprop="articleBody"]') || doc.body;
+                  if (target) {
+                    const paras = item.articleBody.trim().split(/\n{2,}|\r\n\r\n/).map(p => p.trim()).filter(Boolean);
+                    const htmlParas = paras.map(p => `<p>${this._escapeHTML(p)}</p>`).join('\n');
+                    const wrapper = doc.createElement('div');
+                    wrapper.className = 'article-content';
+                    wrapper.innerHTML = htmlParas;
+                    target.appendChild(wrapper);
+                    break;
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {
+        console.warn('SSR state hydration warning:', e);
+      }
+    }
+
     static sanitizeRawHTML(htmlString, sourceUrl = '', preserveStyles = true) {
       if (!htmlString || typeof htmlString !== 'string') {
         throw new Error('Prázdný nebo neplatný HTML obsah');
@@ -747,6 +1383,9 @@
 
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlString, 'text/html');
+
+      // Hydrate Angular Universal / Quill Delta SSR state if the article container in DOM is empty
+      this._hydrateSSRStateAndQuill(doc);
 
       // Check for bot, paywall, or cookie barriers without false-flagging tech articles
       if (this._isChallengeOrErrorPage(doc, htmlString)) {
@@ -764,9 +1403,12 @@
       // 1. Identify Article Title - prioritize actual article headline before header logo / <title>
       const isHeaderLogo = (el) => {
         if (!el) return true;
-        if (el.closest('header, nav, .site-header, .header, .navbar')) return true;
+        if (el.closest('header, nav, .site-header, .header, .navbar, .topbar, [class*="navbar"], [class*="site-header"]')) return true;
         const cls = (el.className || '').toLowerCase();
-        if (cls.includes('logo') || cls.includes('brand') || cls.includes('site-title') || cls.includes('emblem') || cls.includes('masthead') || cls.includes('banner')) return true;
+        if (cls.includes('logo') || cls.includes('brand') || cls.includes('site-title') || cls.includes('emblem') || cls.includes('masthead') || cls.includes('banner') || cls.includes('pub-headings')) return true;
+        const directLink = el.querySelector(':scope > a[href="/"], :scope > a[href="./"]');
+        if (directLink && !cls.includes('post-title') && !cls.includes('article-title') && !cls.includes('entry-title')) return true;
+        if (el.querySelector('[data-wordmark-fit]')) return true;
         const txt = el.textContent.trim().toLowerCase();
         if (sourceUrl) {
           try {
@@ -781,8 +1423,44 @@
         return false;
       };
 
-      const allH1s = Array.from(doc.querySelectorAll('article h1, main h1, [itemprop="headline"], .c-article-title, .article__heading, .c-article-header__title, h1.entry-title, .entry-header h1, .mol-article-header__title, [data-dot="mol-article-title"], .articleNewDetail__title, .e-web-aktualne-articles-show__title, .article-title, .post-title, h1'));
-      let articleTitleEl = allH1s.find(h => !isHeaderLogo(h));
+      const explicitTitleSelectors = [
+        'h1.post-title',
+        'h1.article-title',
+        'h1.article--heading',
+        'h1.entry-title',
+        '[data-hook="post-title"]',
+        '.wp-block-post-title',
+        '.gh-article-title',
+        '.post-full-title',
+        '.blog-item-title h1',
+        '.article-template__title',
+        '.pw-post-title',
+        '[itemprop="headline"]',
+        '.c-article-title',
+        '.article__heading',
+        '.article--heading',
+        '.c-article-header__title',
+        '.mol-article-header__title',
+        '[data-dot="mol-article-title"]',
+        '.articleNewDetail__title',
+        '.e-web-aktualne-articles-show__title',
+        '.entry-header h1',
+        'article h1',
+        'main h1',
+        '.post-title',
+        '.article-title',
+        'h1'
+      ];
+      let articleTitleEl = null;
+      for (const sel of explicitTitleSelectors) {
+        const candidates = Array.from(doc.querySelectorAll(sel));
+        const found = candidates.find(h => !isHeaderLogo(h));
+        if (found) {
+          articleTitleEl = found;
+          break;
+        }
+      }
+      const allH1s = Array.from(doc.querySelectorAll('h1'));
       let title = '';
       if (articleTitleEl) {
         title = articleTitleEl.textContent.trim().replace(/^title:\s*/i, '').replace(/^nadpis:\s*/i, '').trim();
@@ -909,7 +1587,14 @@
         '[class*="audio-player"]', '[class*="video-player"]', '[id*="player-control"]',
         'a[href*="facebook.com/sharer"]', 'a[href*="twitter.com/intent"]', 'a[href*="linkedin.com/share"]',
         'a[href*="pinterest.com/pin"]', 'a[href*="t.me/share"]', 'a[href*="api.whatsapp.com"]',
-        'a[href*="reddit.com/submit"]'
+        'a[href*="reddit.com/submit"]',
+        '.post-ufi', '.subscription-widget-wrap', '.subscribe-widget', '.captioned-button-wrap',
+        '.SinglePostSection', '.single-post-section', '.comments-page', '.discussion-section',
+        '.list-art', '#art-afterlist', '#abcnejctenejsi', '#abchlavniz', '#space-f',
+        '.group-menu', '.blogger-bulb-b', '.artsum-social',
+        '.article--category-name', '.article--category-description', '.article--author-date',
+        '.article--tag-container', '.article--prev-next-container',
+        'app-page-header', 'app-page-breadcrumbs', 'app-page-sidebar', 'app-page-footer'
       ];
       if (mainContainer) {
         unwantedSelectors.forEach(sel => {
@@ -925,14 +1610,14 @@
       titleH1.className = 'doc-element doc-h1';
       titleH1.textContent = title;
       
-      const originalH1 = doc.querySelector('h1');
+      const originalH1 = articleTitleEl || doc.querySelector('h1');
       if (originalH1) {
         this._preserveElementStyles(titleH1, originalH1);
       }
       cleanContainer.appendChild(titleH1);
 
       // Check author/byline metadata
-      const authorMeta = doc.querySelector('meta[name="author"], meta[property="article:author"], .author-name, .byline, .author, .c-article-author');
+      const authorMeta = doc.querySelector('meta[name="author"], meta[property="article:author"], .author-name, .byline, .author, .c-article-author, .artsum .blogger-name, .authors .blogger-name');
       const authorName = authorMeta ? (authorMeta.getAttribute('content') || authorMeta.textContent.trim()) : '';
       if (authorName && authorName.length < 60) {
         const metaDiv = document.createElement('div');
@@ -940,9 +1625,13 @@
         metaDiv.innerHTML = `✍️ <strong>${this._escapeHTML(authorName)}</strong>${sourceUrl ? ` &bull; <em>${this._escapeHTML(new URL(sourceUrl, window.location.href).hostname)}</em>` : ''}`;
         cleanContainer.appendChild(metaDiv);
       }
+      if (mainContainer) {
+        mainContainer.querySelectorAll('.artsum').forEach(el => el.remove());
+      }
 
-      // Check for perex / lead paragraph outside mainContainer
-      const perexEl = doc.querySelector('p.b-detail__perex, p.c-lead, .article__lead, .lead, .perex, .intro, .c-article-teaser, .article-teaser, [data-dot="mol-article-perex"]');
+      // Check for perex / lead paragraph / subtitle outside mainContainer
+      const perexCandidates = Array.from(doc.querySelectorAll('p.b-detail__perex, p.c-lead, p.article--perex, .article__lead, .opener, .post-header .subtitle, h3.subtitle, h2.subtitle, .lead, .perex, .intro, .c-article-teaser, .article-teaser, [data-dot="mol-article-perex"]'));
+      const perexEl = perexCandidates.find(el => !el.closest('.list-art, .related-articles, .recommended, .related-posts, aside, footer, nav, #art-afterlist, #space-f, #abcnejctenejsi, #abchlavniz'));
       if (perexEl && !mainContainer.contains(perexEl)) {
         const perexText = perexEl.textContent.trim();
         if (perexText && perexText.length > 20) {
@@ -950,6 +1639,9 @@
           leadP.className = 'doc-element lead-paragraph';
           leadP.innerHTML = this._cleanInlineContent(perexEl.innerHTML, baseUrl);
           this._preserveElementStyles(leadP, perexEl);
+          if (styleTokens?.leadItalic) {
+            leadP.style.fontStyle = 'italic';
+          }
           cleanContainer.appendChild(leadP);
         }
       }
@@ -1076,11 +1768,60 @@
         '.text-copy',
         '.article__content',
         '.article__body',
+        'quill-view.article--content',
+        '.article--content',
+        'app-article-view.main-content',
+        '[data-hook="post-description"]',
+        '.wp-block-post-content',
+        '.elementor-widget-theme-post-content',
+        '.et_pb_post_content',
+        '.brxe-post-content',
+        '.ct-inner-content',
+        '.oxy-rich-text',
+        '.fl-post-content',
+        '.fusion-post-content',
+        '.td-post-content',
+        '.tdb-block-inner',
+        '.avia_textblock',
+        '.brz-rich-text',
+        '.mw-post-content',
+        '.gh-content',
+        '.post-full-content',
+        '.blog-item-content-wrapper',
+        '.sqs-block-html .sqs-html-content',
+        '.w-richtext',
+        '.article-template__content',
+        '.wn-blog-post',
+        '.news-item-detail',
+        '.sp-article-content',
+        '.ER-article-content',
+        '.up-article-body',
+        '.rendered-post',
+        '.crayons-article__body',
+        '.h-entry .e-content',
+        '.notion-page-content',
+        '.super-content',
+        '#quarto-document-content',
+        '.md-content__inner',
+        '.rst-content',
+        '.node__content',
+        '.com-content-article__body',
+        '.ce-bodytext',
+        '.hs_cos_wrapper_type_rich_text',
+        '.blog-post__body',
+        '.design-article__content',
         '.core-container',
         '.body-content',
         '.mol-article-content',
         '[data-dot="mol-article-content"]',
         '[itemprop="articleBody"]',
+        '.art-full #art-text',
+        '#art-text',
+        '.art-full',
+        '.available-content .body.markup',
+        '.body.markup',
+        '.available-content',
+        '.dt-post-body',
         '.entry-content',
         '.single-content',
         '.post-content',
@@ -1132,7 +1873,7 @@
             let score = (paragraphs.length * 120) + (headings.length * 45) + Math.min(textLength / 10, 600);
             if (linkDensity > 0.35) score -= (linkDensity * 300);
 
-            if (sel.includes('article') || sel.includes('content') || sel.includes('entry') || sel.includes('b-detail') || sel.includes('body')) {
+            if (sel.includes('article') || sel.includes('content') || sel.includes('entry') || sel.includes('b-detail') || sel.includes('body') || sel.includes('art-text') || sel.includes('art-full')) {
               score += 150;
             }
 
@@ -1140,12 +1881,12 @@
               if (el.contains(bestContainer)) {
                 // el is an ancestor of bestContainer. Prefer the more focused child if it has sufficient content
                 const bestPs = bestContainer.querySelectorAll('p').length;
-                if (bestPs >= 3) return;
+                if (bestPs >= 2) return;
               } else if (bestContainer.contains(el)) {
                 // el is a child of bestContainer. If el contains the bulk of the content, prefer the child!
                 const childPs = paragraphs.length;
                 const parentPs = bestContainer.querySelectorAll('p').length;
-                if (childPs >= 3 && childPs >= parentPs * 0.6) {
+                if (childPs >= 2 && childPs >= parentPs * 0.6) {
                   highestScore = score;
                   bestContainer = el;
                   return;
@@ -1207,6 +1948,8 @@
         'figure.lead-image img',
         'figure.article__hero img',
         'figure.article-lead-image img',
+        'img.article--image',
+        '.article--image img',
         '.b-detail__img img',
         '.c-article-header figure img',
         '.c-article-header img',
@@ -1381,9 +2124,14 @@
 
       const classListStr = (node.className && typeof node.className === 'string') ? node.className.toLowerCase() : '';
       const idStr = (node.id && typeof node.id === 'string') ? node.id.toLowerCase() : '';
-      if (/(?:social|share|sharing|player|podcast|audio-controls|media-controls|video-controls|jw-|vjs-|like-btn|reaction|bookmark|recirc|recirculation|related-posts|related-articles|more-stories|popular-posts|trending|outbrain|taboola|advertisement|newsletter)/.test(classListStr) ||
-          /(?:recirc|related-posts|social-share|newsletter-signup)/.test(idStr)) {
-        return;
+      const isMainArticleWrapper = tag === 'article' || tag === 'main' ||
+        /(?:newsletter-post|single-post|post-body|article-body|entry-content|available-content|markup)/.test(classListStr);
+
+      if (!isMainArticleWrapper) {
+        if (/(?:social-share|share-button|share-bar|sharing|audio-player|video-player|podcast-player|audio-controls|media-controls|video-controls|jw-|vjs-|like-btn|like-button|post-ufi|reaction|bookmark|recirc|recirculation|related-posts|related-articles|more-stories|popular-posts|trending|outbrain|taboola|advertisement|newsletter-signup|subscribe-widget|subscription-widget)/.test(classListStr) ||
+            /(?:recirc|related-posts|social-share|newsletter-signup|subscribe-widget)/.test(idStr)) {
+          return;
+        }
       }
 
       if (node.classList?.contains('ez-toc-container') || node.classList?.contains('lwptoc') || node.classList?.contains('table-of-contents')) {
@@ -1428,11 +2176,11 @@
           videoCard.className = 'doc-callout doc-callout-video doc-element';
           videoCard.setAttribute('data-block-type', 'callout');
           videoCard.setAttribute('data-callout-type', 'video');
-          const qrSvg = QRGenerator.generateSVG(videoUrl, { margin: 1 });
+          const qrSvg = QRGenerator.generateSVG(videoUrl, { margin: 2 });
           videoCard.innerHTML = `
             <div class="doc-callout-header">🎬 Video ukázka: ${this._escapeHTML(cleanTitle)}</div>
             <div style="display: flex; gap: 10px; align-items: center; margin: 6px 0;">
-              <div class="doc-qr-canvas-wrapper" style="width: 20mm; height: 20mm; flex-shrink: 0; background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1); border-radius: 4px; padding: 2px;">
+              <div class="doc-qr-canvas-wrapper" style="width: 22mm; height: 22mm; flex-shrink: 0; background: #ffffff; border: 1px solid var(--doc-border, #cbd5e1); border-radius: 4px; padding: 3px;">
                 ${qrSvg}
               </div>
               <div style="flex: 1; min-width: 0;">
@@ -1941,7 +2689,7 @@
                    docToQuery.querySelector('article h2, main h2, [itemprop="articleBody"] h2, .entry-content h2, h2');
         let h3El = docToQuery.querySelector('article h3, main h3, [itemprop="articleBody"] h3, .entry-content h3, h3');
         let h4El = docToQuery.querySelector('article h4, main h4, [itemprop="articleBody"] h4, .entry-content h4, h4');
-        let leadEl = docToQuery.querySelector('.lead, .perex, .c-article-teaser, .article-lead, .intro, p.lead');
+        let leadEl = docToQuery.querySelector('.lead, .perex, .article--perex, .c-article-teaser, .article-lead, .opener, .intro, p.lead');
         let aEl = docToQuery.querySelector('[data-up-probe="a"]') ||
                   docToQuery.querySelector('article p a, main p a, p a, a');
         let headerEl = docToQuery.querySelector('header, .site-header, .navbar, nav');
@@ -1981,6 +2729,9 @@
           const hex = this._normalizeColorToHex(resolved);
           if (!hex) return;
 
+          // Exclude unstyled browser default link colors (#0000ee, #0000ff, #551a8b)
+          if (hex === '#0000ee' || hex === '#0000ff' || hex === '#551a8b') return;
+
           const hsl = this._hexToHSL(hex);
           if (!hsl) return;
 
@@ -1998,21 +2749,46 @@
           if (c) addColorScore(c, 40);
         });
 
-        // B. Scan Universal Framework CSS Variables
+        // B. Scan Universal Framework & Website Builder CSS Variables (WordPress/Elementor/Astra/Kadence/Blocksy/Neve/Avada/Bricks, Wix, Squarespace, Ghost, Shopify, Webnode, Substack, Beehiiv, MkDocs)
         cssVars.forEach((val, vn) => {
-          if (/brand|theme|primary|accent|color-0|palette1|palette-1|vp-c-brand|ifm-color-primary|ghost-accent/i.test(vn)) {
+          if (/brand|theme|primary|accent|color-0|palette1|palette-1|theme-palette-color-1|nv-primary-accent|awb-color4|bricks-color-primary|bh-color-accent|md-primary-fg-color|vp-c-brand|ifm-color-primary|ghost-accent|gh-accent|color-base-accent|wnd-color-accent|e-global-color-primary|ast-global-color-0/i.test(vn)) {
             addColorScore(val, 35);
-          } else if (/palette[2-3]|color-1|color-2|color-primary/i.test(vn)) {
+          } else if (/palette[2-3]|theme-palette-color-[23]|nv-secondary-accent|color-1|color-2|color-primary|color_1[789]|e-global-color-secondary/i.test(vn)) {
             addColorScore(val, 20);
           }
         });
 
-        // C. Header / Navbar computed color
+        // C. Header / Navbar / Headings / Accent elements computed color
         if (computedHeader?.backgroundColor) {
           addColorScore(computedHeader.backgroundColor, 25);
         }
         if (computedLink?.color) {
           addColorScore(computedLink.color, 15);
+        }
+        [computedH1, computedH2, computedH3, computedH4].forEach(ch => {
+          if (ch?.color) addColorScore(ch.color, 18);
+        });
+        if (iframeWin) {
+          try {
+            const accentEls = docToQuery.querySelectorAll('.short-separator, [class*="separator"], [class*="category"], [class*="author"], [class*="badge"], [class*="tag"]');
+            accentEls.forEach(el => {
+              const cs = iframeWin.getComputedStyle(el);
+              if (cs?.color) addColorScore(cs.color, 14);
+              if (cs?.backgroundColor) addColorScore(cs.backgroundColor, 14);
+              if (cs?.borderTopColor) addColorScore(cs.borderTopColor, 14);
+            });
+          } catch (e) {}
+        }
+
+        // D. Fallback: scan stylesheet rules for recurring chromatic accent colors if none found above
+        if (colorScores.size === 0) {
+          styleTags.forEach(s => {
+            const text = s.textContent || '';
+            const propMatches = text.matchAll(/(?:^|[;{\s])(?:color|background-color|border(?:-top|-bottom|-left|-right)?-color)\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]+\))\b/gi);
+            for (const m of propMatches) {
+              addColorScore(m[1], 5);
+            }
+          });
         }
 
         // Determine best brand color
@@ -2062,18 +2838,47 @@
           extractedHeadingFont = 'Linux Libertine';
         } else {
 
-          // Harvest all @font-face definitions declared in document
+          // Harvest all @font-face definitions declared in document and inject them into main document.head
           const declaredFontFaces = [];
+          const extractedFontFaceBlocks = [];
           styleTags.forEach(s => {
             const text = s.textContent || '';
-            const ffMatches = text.matchAll(/@font-face\s*\{[^}]*font-family\s*:\s*['"]?([^'";}\n]+)['"]?/gi);
-            for (const m of ffMatches) {
-              const ffName = this._cleanFontFamilyString(m[1]);
-              if (ffName && !isGenericOrMissing(ffName) && !declaredFontFaces.includes(ffName)) {
-                declaredFontFaces.push(ffName);
+            const blockMatches = text.matchAll(/@font-face\s*\{([^}]+)\}/gi);
+            for (const bm of blockMatches) {
+              let blockBody = bm[1];
+              const ffMatch = blockBody.match(/font-family\s*:\s*['"]?([^'";}\n]+)['"]?/i);
+              if (ffMatch) {
+                const ffName = this._cleanFontFamilyString(ffMatch[1]);
+                if (ffName && !isGenericOrMissing(ffName) && !declaredFontFaces.includes(ffName)) {
+                  declaredFontFaces.push(ffName);
+                }
               }
+              if (sourceUrl) {
+                blockBody = blockBody.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, quote, rawUrl) => {
+                  const trimmedUrl = rawUrl.trim();
+                  if (!trimmedUrl || trimmedUrl.startsWith('data:') || trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
+                    return full;
+                  }
+                  try {
+                    return `url("${new URL(trimmedUrl, sourceUrl).href}")`;
+                  } catch (e) {
+                    return full;
+                  }
+                });
+              }
+              extractedFontFaceBlocks.push(`@font-face { ${blockBody} }`);
             }
           });
+
+          if (extractedFontFaceBlocks.length > 0 && typeof document !== 'undefined' && document.head) {
+            let ffStyleEl = document.getElementById('up-extracted-font-faces');
+            if (!ffStyleEl) {
+              ffStyleEl = document.createElement('style');
+              ffStyleEl.id = 'up-extracted-font-faces';
+              document.head.appendChild(ffStyleEl);
+            }
+            ffStyleEl.textContent = extractedFontFaceBlocks.join('\n');
+          }
 
           // Build exact selector inventory from the identified article nodes
           const articlePSelectors = [];
@@ -2179,10 +2984,10 @@
               }
             });
 
-            // Pass 1: Explicit Heading tokens
+            // Pass 1: Explicit Heading tokens (including WordPress, Elementor, Avada, Blocksy, Neve, Wix, Squarespace, Ghost, Shopify, Webnode, Beehiiv)
             for (const { lowerVar, resolved } of resolvedVars) {
               if (isGenericOrMissing(extractedHeadingFont)) {
-                if (/font.*(?:head|title|h1|display|brand-heading)|(?:head|title|h1|display|brand-heading).*font/i.test(lowerVar)) {
+                if (/font.*(?:head|title|h1|display|brand-heading|primary)|(?:head|title|h1|display|brand-heading|primary).*font|headingsfontfamily|awb-typography1|bh-font-heading|gh-font-heading|wix-font-title|wst-heading|wnd-font-primary/i.test(lowerVar)) {
                   extractedHeadingFont = resolved;
                 }
               }
@@ -2191,7 +2996,7 @@
             // Pass 2: Explicit Body / Text / Sans tokens
             for (const { lowerVar, resolved } of resolvedVars) {
               if (isGenericOrMissing(extractedFont)) {
-                if (/font.*(?:body|sans|base|text|main|para|content)|(?:body|sans|base|text|main|para|content).*font/i.test(lowerVar)) {
+                if (/font.*(?:body|sans|base|text|main|para|content|secondary)|(?:body|sans|base|text|main|para|content|secondary).*font|bodyfontfamily|theme-font-family|awb-body-font|bh-font-body|md-text-font|notion-font|gh-font-body|wix-font-body|wst-body|wnd-font-secondary|framer-font-family/i.test(lowerVar)) {
                   extractedFont = resolved;
                 }
               }
@@ -2229,13 +3034,13 @@
                 if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedH4Font)) extractedH4Font = res;
               }
 
-              const allHeadMatches = text.matchAll(/(?:\.c-article-title|\.article__heading|\.mol-article-header__title|\.entry-title|\.articleNewDetail__title|\.e-web-aktualne-articles-show__title|\.post-title|\.article-title|\.page-title|h1)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
+              const allHeadMatches = text.matchAll(/(?:\.c-article-title|\.article__heading|\.article--heading|\.mol-article-header__title|\.entry-title|\.articleNewDetail__title|\.e-web-aktualne-articles-show__title|\.post-title|\.article-title|\.page-title|h1)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
               for (const m of allHeadMatches) {
                 const res = this._cleanFontFamilyString(this._resolveCssValue(m[1], cssVars));
                 if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedHeadingFont)) extractedHeadingFont = res;
               }
 
-              const allBodyMatches = text.matchAll(/(?:\.c-article-body(?:[\s>]+p)?|\.article__content(?:[\s>]+p)?|\.article__body(?:[\s>]+p)?|\.core-container(?:[\s>]+p)?|body|\.mol-article-content(?:[\s>]+p)?|\.articleNewDetail__content(?:[\s>]+p)?|\.e-web-aktualne-articles-show-body(?:[\s>]+p)?|\.entry-content[\s>]+p|\.post-content[\s>]+p|article[\s>]+p|main[\s>]+p|\.doc-content[\s>]+p)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
+              const allBodyMatches = text.matchAll(/(?:\.c-article-body(?:[\s>]+p)?|\.article__content(?:[\s>]+p)?|\.article--content(?:[\s>]+(?:\.ql-editor|p))?|\.article__body(?:[\s>]+p)?|\.core-container(?:[\s>]+p)?|body|\.mol-article-content(?:[\s>]+p)?|\.articleNewDetail__content(?:[\s>]+p)?|\.e-web-aktualne-articles-show-body(?:[\s>]+p)?|\.entry-content[\s>]+p|\.post-content[\s>]+p|article[\s>]+p|main[\s>]+p|\.doc-content[\s>]+p)[^{]*\{[^}]*?font-family\s*:\s*([^;!}\n]+)/gi);
               for (const m of allBodyMatches) {
                 const res = this._cleanFontFamilyString(this._resolveCssValue(m[1], cssVars));
                 if (res && !res.toLowerCase().includes('inherit') && isGenericOrMissing(extractedFont)) extractedFont = res;
@@ -2443,8 +3248,45 @@
         const finalH4Font = h4Stack || cleanH4Font || fallback.h4Font || finalHeadingFont;
         const finalP = pColor || fallback.pColor || '#334155';
 
+        // Extract article / page paper background if it is a light editorial tint (e.g. warm cream #fbf6eb on pkohout.com)
+        let paperBg = '#ffffff';
+        if (iframeWin && !isWikipedia) {
+          try {
+            const bgCandidates = [];
+            let currBgEl = pEl || h1El;
+            while (currBgEl && currBgEl.nodeType === 1) {
+              bgCandidates.push(currBgEl);
+              currBgEl = currBgEl.parentElement;
+            }
+            docToQuery.querySelectorAll('article, main, [data-hook="post-description"], .L5x0Fp, body').forEach(el => {
+              if (!bgCandidates.includes(el)) bgCandidates.push(el);
+            });
+            for (const cand of bgCandidates) {
+              const cs = iframeWin.getComputedStyle(cand);
+              const rawBg = cs?.backgroundColor;
+              if (rawBg && rawBg !== 'rgba(0, 0, 0, 0)' && rawBg !== 'transparent') {
+                const hex = this._normalizeColorToHex(rawBg);
+                if (hex && hex !== '#ffffff') {
+                  const hsl = this._hexToHSL(hex);
+                  if (hsl && hsl.l >= 0.85 && hsl.l < 0.998) {
+                    paperBg = hex;
+                    break;
+                  }
+                } else if (hex === '#ffffff') {
+                  paperBg = '#ffffff';
+                  break;
+                }
+              }
+            }
+          } catch (e) {}
+        }
+
+        const h1Weight = computedH1?.fontWeight || '700';
+        const h2Weight = computedH2?.fontWeight || h1Weight || '700';
+
         const styleTokens = {
           brandColor: finalBrand,
+          paperBg,
           lightBg: finalBg,
           lightBorder: finalBorder,
           secondaryColor: finalSecondary,
@@ -2453,10 +3295,14 @@
           h2Color: finalH2,
           h3Color: finalH3,
           h4Color: finalH4,
+          h1Weight,
+          h2Weight,
           pColor: finalP,
           bodyFont: finalBodyFont,
           headingFont: finalHeadingFont,
           h4Font: finalH4Font,
+          leadItalic: computedLead?.fontStyle === 'italic',
+          hasDropCap: styleTags.some(s => /:first-letter/i.test(s.textContent || '')),
           sourceHost: sourceUrl ? new URL(sourceUrl, window.location.href).hostname : ''
         };
 
@@ -2476,24 +3322,71 @@
       const parts = trimmed.split(',').map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
       if (parts.length === 0) return '';
 
-      return parts.map(rawName => {
-        // Strip Next.js / Webpack hashed font identifiers: __polysans_9afc27 -> polysans
-        let name = rawName.replace(/^__([a-zA-Z0-9_-]+)_[a-f0-9]{4,}$/, '$1').replace(/_/g, ' ').trim();
+      const cleanedParts = [];
+      for (const rawName of parts) {
+        // Ignore Wix internal hashed font tokens (wfont_1d6c65_..., wf_e58f204014..., font_0..font_9)
+        if (/^(?:wfont|wf)_[a-f0-9_]+$/i.test(rawName) || /^font_\d+$/i.test(rawName)) {
+          continue;
+        }
+        // Ignore Next.js automatic fallback metrics font (__Inter_Fallback_e66fe9)
+        if (/^__[a-zA-Z0-9_-]+_Fallback_[a-f0-9]{4,}$/i.test(rawName) || /\bFallback$/i.test(rawName)) {
+          continue;
+        }
+        let name = rawName;
+        // Strip Framer font prefixes (GF;Playfair Display-regular -> Playfair Display)
+        name = name.replace(/^(?:GF|FS|TK);/i, '');
+
+        // Decode Wix original font identifier: orig_eb_garamond_regular -> EB Garamond
+        if (/^orig_/i.test(name)) {
+          name = name
+            .replace(/^orig_/i, '')
+            .replace(/(?:_(?:regular|bold|light|medium|semibold|extrabold|ultrabold|black|italic|thin|hairline|book|roman|normal|oblique|\d+))+$/i, '')
+            .replace(/_/g, ' ')
+            .trim();
+          name = name.split(/\s+/).map(w => {
+            if (/^(?:eb|pt|st|nt|itc|mt|bt|lt|urw|ibm|tv|fk)$/i.test(w)) return w.toUpperCase();
+            return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+          }).join(' ');
+        } else {
+          // Strip Next.js / Webpack hashed font identifiers: __polysans_9afc27 -> polysans
+          name = name.replace(/^__([a-zA-Z0-9_-]+)_[a-f0-9]{4,}$/, '$1').replace(/_/g, ' ').trim();
+          // Strip Typekit / Squarespace / Webflow variation suffixes (-n4, -n7, -i4) and weight suffixes (-Regular, -Bold)
+          name = name.replace(/-[ni][1-9]$/i, '').replace(/-(?:Regular|Bold|Light|Medium|SemiBold|ExtraBold|Black|Italic|Roman|Book)$/i, '').trim();
+        }
+        if (!name) continue;
         const lower = name.toLowerCase();
         if (['sans-serif', 'serif', 'monospace', 'cursive', 'fantasy', 'system-ui', '-apple-system', 'blinkmacsystemfont', 'ui-sans-serif', 'ui-serif', 'ui-monospace'].includes(lower)) {
-          return name;
+          cleanedParts.push(name);
+        } else if (!cleanedParts.includes(`"${name}"`)) {
+          cleanedParts.push(`"${name}"`);
         }
-        return `"${name}"`;
-      }).join(', ');
+      }
+      return cleanedParts.join(', ');
     }
 
     static _buildFontStack(fontName) {
       if (!fontName) return 'system-ui, -apple-system, sans-serif';
-      const clean = fontName.replace(/['"]/g, '').trim();
-      const lower = clean.toLowerCase();
+      const rawParts = fontName.split(',').map(p => p.replace(/['"]/g, '').trim()).filter(Boolean);
+      const genericKeywords = ['sans-serif', 'serif', 'monospace', 'cursive', 'fantasy', 'system-ui', '-apple-system', 'blinkmacsystemfont', 'ui-sans-serif', 'ui-serif', 'ui-monospace'];
+      const nonGenericParts = rawParts.filter(p => !genericKeywords.includes(p.toLowerCase()));
+      const primaryClean = nonGenericParts[0] || rawParts[0] || fontName.replace(/['"]/g, '').trim();
+      const lower = primaryClean.toLowerCase();
 
       // Check if there is a known proprietary or commercial font that needs a mapped Google Font
       const proprietaryMap = {
+        'eb garamond': 'EB Garamond',
+        'vollkorn var': 'Vollkorn',
+        'vollkorn': 'Vollkorn',
+        'tabac big': 'Playfair Display',
+        'tabac': 'Playfair Display',
+        'source-serif-pro': 'Source Serif 4',
+        'source serif pro': 'Source Serif 4',
+        'gt-super': 'Playfair Display',
+        'gt super': 'Playfair Display',
+        'freight-text-pro': 'Lora',
+        'freight text pro': 'Lora',
+        'ff-tisa': 'Merriweather',
+        'tisa': 'Merriweather',
         'bbc reith': 'Lora',
         'reith serif': 'Lora',
         'reith sans': 'Plus Jakarta Sans',
@@ -2514,6 +3407,9 @@
         'circular': 'Plus Jakarta Sans',
         'graphik': 'Inter',
         'proxima nova': 'Montserrat',
+        'proxima-nova': 'Montserrat',
+        'avenir': 'Plus Jakarta Sans',
+        'brandon grotesque': 'Outfit',
         'futura': 'Outfit',
         'neue helvetica': 'Inter',
         'helvetica neue': 'Inter',
@@ -2537,19 +3433,23 @@
         }
       }
 
-      if (fontName.includes(',')) {
-        if (mappedGoogleFont && !lower.includes(mappedGoogleFont.toLowerCase())) {
+      // Only preserve multi-font stacks verbatim if they contain multiple real (non-generic) font names
+      if (nonGenericParts.length > 1) {
+        if (mappedGoogleFont && !fontName.toLowerCase().includes(mappedGoogleFont.toLowerCase())) {
           const firstComma = fontName.indexOf(',');
           return fontName.substring(0, firstComma) + `, "${mappedGoogleFont}"` + fontName.substring(firstComma);
         }
         return fontName;
       }
 
+      const clean = primaryClean;
+
       // Serif family stack
-      const serifKeywords = ['harding', 'antiqua', 'theantiquab', 'the antiqua', 'pt serif', 'martel', 'libertine', 'garamond', 'georgia', 'times', 'serif', 'lora', 'merriweather', 'playfair', 'cinzel', 'caslon', 'baskerville', 'minion', 'charter', 'cambria', 'constantia', 'cormorant', 'spectral', 'bitter', 'forum', 'cheltenham', 'imperial', 'financier', 'escrow', 'publico', 'lyon', 'guardian headline', 'guardian text', 'noto_serif', 'majrit', 'tiempos', 'sentinel', 'elena', 'faustina', 'heldane', 'spiegelserif', 'bower', 'reith', 'austin', 'sme headline'];
+      const serifKeywords = ['vollkorn', 'tabac', 'harding', 'antiqua', 'theantiquab', 'the antiqua', 'pt serif', 'martel', 'libertine', 'garamond', 'georgia', 'times', 'serif', 'lora', 'merriweather', 'playfair', 'cinzel', 'caslon', 'baskerville', 'minion', 'charter', 'cambria', 'constantia', 'cormorant', 'spectral', 'bitter', 'forum', 'cheltenham', 'imperial', 'financier', 'escrow', 'publico', 'lyon', 'guardian headline', 'guardian text', 'noto_serif', 'majrit', 'tiempos', 'sentinel', 'elena', 'faustina', 'heldane', 'spiegelserif', 'bower', 'reith', 'austin', 'sme headline'];
       if (serifKeywords.some(k => lower.includes(k))) {
         const fallbackG = mappedGoogleFont || 'Lora';
-        return `"${clean}", "${fallbackG}", "Merriweather", Georgia, "Times New Roman", serif`;
+        const dedupFallback = fallbackG.toLowerCase() === lower ? '' : `"${fallbackG}", `;
+        return `"${clean}", ${dedupFallback}"Merriweather", Georgia, "Times New Roman", serif`;
       }
 
       // Monospace family stack
@@ -2577,6 +3477,10 @@
       
       // Known proprietary webfont fallbacks to high-grade Google Fonts
       const proprietaryMap = {
+        'vollkorn var': 'Vollkorn',
+        'vollkorn': 'Vollkorn',
+        'tabac big': 'Playfair Display',
+        'tabac': 'Playfair Display',
         'bbc reith': 'Lora',
         'reith serif': 'Lora',
         'reith sans': 'Plus Jakarta Sans',
@@ -2675,14 +3579,30 @@
         }
       }
 
-      // 3. HSL / HSLA format (comma or space separated)
-      if (c.startsWith('hsl')) {
+      // 3. HSL / HSLA format (comma or space separated) or bare HSL triplet (Squarespace 7.1 --accent-hsl: 350, 62%, 69%)
+      if (c.startsWith('hsl') || /^\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%$/.test(c)) {
         const nums = c.match(/[\d.]+/g);
         if (nums && nums.length >= 3) {
           const h = parseFloat(nums[0]) || 0;
           const s = (parseFloat(nums[1]) || 0) / 100;
           const l = (parseFloat(nums[2]) || 0) / 100;
           return this._hslToHex(h, s, l);
+        }
+      }
+
+      // 3b. Bare RGB triplet format (Wix --color_18: 232,74,67 / Shopify --color-base-accent-1: 18, 18, 18 / Bootstrap --bs-primary-rgb: 13, 110, 253)
+      if (/^\d{1,3}(?:\s*,\s*|\s+)\d{1,3}(?:\s*,\s*|\s+)\d{1,3}$/.test(c)) {
+        const nums = c.match(/\d+/g);
+        if (nums && nums.length === 3) {
+          const rVal = parseInt(nums[0], 10);
+          const gVal = parseInt(nums[1], 10);
+          const bVal = parseInt(nums[2], 10);
+          if (rVal <= 255 && gVal <= 255 && bVal <= 255) {
+            const r = rVal.toString(16).padStart(2, '0');
+            const g = gVal.toString(16).padStart(2, '0');
+            const b = bVal.toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+          }
         }
       }
 
@@ -4030,30 +4950,74 @@
     _getContentHeight(sheetBody) {
       const children = sheetBody.children;
       if (!children || children.length === 0) return 0;
-      const lastChild = children[children.length - 1];
-      const style = window.getComputedStyle(lastChild);
-      const marginBottom = parseFloat(style.marginBottom) || 0;
-      return lastChild.offsetTop + lastChild.offsetHeight + marginBottom;
+      let maxBottom = 0;
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const style = window.getComputedStyle(child);
+        const marginBottom = (i === children.length - 1) ? 0 : (parseFloat(style.marginBottom) || 0);
+        const bottom = child.offsetTop + child.offsetHeight + marginBottom;
+        if (bottom > maxBottom) {
+          maxBottom = bottom;
+        }
+      }
+      return maxBottom;
     }
 
     _checkSheetOverflow(sheetBody, availableHeightPx, isMultiColumn) {
+      if (!sheetBody) return false;
+      const children = sheetBody.children;
+      if (!children || children.length === 0) return false;
+
+      let maxH = availableHeightPx;
+      if (sheetBody.clientHeight > 50 && sheetBody.clientHeight < maxH) {
+        maxH = sheetBody.clientHeight;
+      }
+
       if (isMultiColumn) {
         if (sheetBody.scrollWidth > sheetBody.clientWidth + 3) return true;
-        if (sheetBody.scrollHeight > sheetBody.clientHeight + 3) return true;
-        const children = sheetBody.children;
-        if (children.length > 0) {
-          const bodyRect = sheetBody.getBoundingClientRect();
-          if (bodyRect.width > 0 && bodyRect.height > 0) {
-            const last = children[children.length - 1];
-            const lastRect = last.getBoundingClientRect();
-            if (lastRect.right > bodyRect.right + 3) return true;
-            if (lastRect.bottom > bodyRect.bottom + 3) return true;
-          }
+        if (sheetBody.scrollHeight > maxH + 2) return true;
+        if (sheetBody.clientHeight > 0 && sheetBody.scrollHeight > sheetBody.clientHeight + 2) return true;
+        const bodyRect = sheetBody.getBoundingClientRect();
+        if (bodyRect.width > 0 && bodyRect.height > 0) {
+          const last = children[children.length - 1];
+          const lastRect = last.getBoundingClientRect();
+          if (lastRect.right > bodyRect.right + 3) return true;
+          if (lastRect.bottom > bodyRect.bottom + 2) return true;
         }
         return false;
       } else {
+        // Single column layout
+        // 1. Direct scrollHeight check
+        if (sheetBody.scrollHeight > maxH + 1) return true;
+        if (sheetBody.clientHeight > 0 && sheetBody.scrollHeight > sheetBody.clientHeight + 1) return true;
+
+        // 2. Computed content bottom
         const contentH = this._getContentHeight(sheetBody);
-        return contentH > availableHeightPx;
+        if (contentH > maxH - 1) return true;
+
+        // 3. Collision with Footer element
+        const lastChild = children[children.length - 1];
+        const footer = sheetBody.parentElement?.querySelector('.sheet-footer');
+        if (footer && lastChild) {
+          const footerRect = footer.getBoundingClientRect();
+          const lastRect = lastChild.getBoundingClientRect();
+          if (footerRect.height > 0 && lastRect.height > 0) {
+            if (lastRect.bottom > footerRect.top - 2) {
+              return true;
+            }
+          }
+        }
+
+        // 4. Bounding box check against sheetBody bottom
+        const bodyRect = sheetBody.getBoundingClientRect();
+        if (bodyRect.height > 0 && lastChild) {
+          const lastRect = lastChild.getBoundingClientRect();
+          if (lastRect.bottom > bodyRect.bottom + 1) {
+            return true;
+          }
+        }
+
+        return false;
       }
     }
 
@@ -4126,7 +5090,7 @@
       // Automatically tag opening paragraph of each chapter for drop-caps and lead styling
       const seenChaptersForLead = new Set();
       Array.from(sandbox.children).forEach(el => {
-        if (el.tagName === 'P' && el.textContent.trim().length > 20) {
+        if (el.tagName === 'P' && !el.classList.contains('lead-paragraph') && el.textContent.trim().length > 20) {
           const chKey = el.getAttribute('data-chapter-id') || '__default__';
           if (!seenChaptersForLead.has(chKey)) {
             seenChaptersForLead.add(chKey);
@@ -4201,20 +5165,48 @@
       const needHeader = this.config.includeHeader || hasPageNumInHeader;
       const needFooter = this.config.includeFooter || hasPageNumInFooter;
 
-      const headerHeightMm = needHeader ? 7.5 : 0;
-      const footerHeightMm = needFooter ? 7.5 : 0;
-      const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm);
-      const availableHeightPx = Math.max(120, availableHeightMm * mmToPx);
+      // Real header/footer footprint in mm: 7.5mm content height + 2.5mm margin
+      const headerHeightMm = needHeader ? 10 : 0;
+      const footerHeightMm = needFooter ? 10 : 0;
+      // 2.0mm breathing margin above footer to guarantee zero overlap of descenders/margins into footer
+      const safetyMarginMm = 2.0;
+      const availableHeightMm = sheetHeightMm - (this.config.marginTop + this.config.marginBottom + headerHeightMm + footerHeightMm + safetyMarginMm);
+      let availableHeightPx = Math.max(80, availableHeightMm * mmToPx);
       const isMultiCol = (this.config.columns || 1) > 1;
 
+      const getRealBodyAvailableHeight = (sheet) => {
+        if (!sheet) return availableHeightPx;
+        const b = sheet.querySelector('.sheet-body');
+        if (!b) return availableHeightPx;
+        const inner = sheet.querySelector('.sheet-inner');
+        if (inner && inner.clientHeight > 0) {
+          const header = inner.querySelector('.sheet-header');
+          const footer = inner.querySelector('.sheet-footer');
+          const headerH = (header && header.offsetHeight > 0) ? (header.offsetHeight + parseFloat(window.getComputedStyle(header).marginBottom || 0)) : 0;
+          const footerH = (footer && footer.offsetHeight > 0) ? (footer.offsetHeight + parseFloat(window.getComputedStyle(footer).marginTop || 0)) : 0;
+          const innerStyle = window.getComputedStyle(inner);
+          const innerPaddingTop = parseFloat(innerStyle.paddingTop || 0);
+          const innerPaddingBottom = parseFloat(innerStyle.paddingBottom || 0);
+          const computedAvailable = inner.clientHeight - innerPaddingTop - innerPaddingBottom - headerH - footerH - (safetyMarginMm * mmToPx);
+          if (computedAvailable > 60) {
+            return computedAvailable;
+          }
+        }
+        if (b.clientHeight > 60) {
+          return b.clientHeight - (safetyMarginMm * mmToPx);
+        }
+        return availableHeightPx;
+      };
+
       const lockBodyHeight = (sheet) => {
-        if (!isMultiCol) return;
         const b = sheet.querySelector('.sheet-body');
         if (!b) return;
-        const realH = b.clientHeight || availableHeightPx;
-        b.style.height = realH + 'px';
+        const realH = getRealBodyAvailableHeight(sheet);
         b.style.maxHeight = realH + 'px';
-        b.style.flex = `0 0 ${realH}px`;
+        if (isMultiCol) {
+          b.style.height = realH + 'px';
+          b.style.flex = `0 0 ${realH}px`;
+        }
       };
 
       let pageCount = 1;
@@ -4222,6 +5214,7 @@
       let currentSheetBody = currentSheet.querySelector('.sheet-body');
       this.zoomWrapper.appendChild(currentSheet);
       this.sheets.push(currentSheet);
+      availableHeightPx = getRealBodyAvailableHeight(currentSheet);
       lockBodyHeight(currentSheet);
 
       const maxLoopIterations = Math.max(500, elements.length * 4);
@@ -4276,11 +5269,11 @@
           }
         }
 
-        if ((exceeds || headingNearBottom) && currentSheetBody.children.length > 1) {
+        if (exceeds || headingNearBottom) {
           const splitDepth = parseInt(el.getAttribute('data-split-depth') || '0', 10);
 
           // 1. List Item Splitting (<ul>, <ol>)
-          if (exceeds && splitDepth < 3 && (cloned.tagName === 'UL' || cloned.tagName === 'OL')) {
+          if (exceeds && splitDepth < 4 && (cloned.tagName === 'UL' || cloned.tagName === 'OL')) {
             const continuationList = this._splitListAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationList) {
               continuationList.setAttribute('data-split-depth', (splitDepth + 1).toString());
@@ -4297,7 +5290,7 @@
           }
 
           // 2. Paragraph Text Splitting
-          if (exceeds && splitDepth < 3 && (cloned.tagName === 'P' || cloned.tagName === 'BLOCKQUOTE' || (cloned.tagName === 'DIV' && !cloned.classList.contains('doc-callout')))) {
+          if (exceeds && splitDepth < 4 && (cloned.tagName === 'P' || cloned.tagName === 'BLOCKQUOTE' || (cloned.tagName === 'DIV' && !cloned.classList.contains('doc-callout')))) {
             const continuationEl = this._splitParagraphAcrossPages(cloned, currentSheetBody, availableHeightPx, isMultiCol);
             if (continuationEl) {
               continuationEl.setAttribute('data-split-depth', (splitDepth + 1).toString());
@@ -4313,27 +5306,29 @@
             }
           }
 
-          cloned.remove();
+          if (currentSheetBody.children.length > 1) {
+            cloned.remove();
 
-          // Heading orphan protection: if removing cloned leaves a trailing heading alone at bottom, move it along
-          let orphanedHeading = null;
-          const prevChild = currentSheetBody.lastElementChild;
-          if (prevChild && ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(prevChild.tagName) && currentSheetBody.children.length > 1) {
-            orphanedHeading = prevChild;
-            orphanedHeading.remove();
+            // Heading orphan protection: if removing cloned leaves a trailing heading alone at bottom, move it along
+            let orphanedHeading = null;
+            const prevChild = currentSheetBody.lastElementChild;
+            if (prevChild && ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(prevChild.tagName) && currentSheetBody.children.length > 1) {
+              orphanedHeading = prevChild;
+              orphanedHeading.remove();
+            }
+
+            pageCount++;
+            currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
+            currentSheetBody = currentSheet.querySelector('.sheet-body');
+            this.zoomWrapper.appendChild(currentSheet);
+            this.sheets.push(currentSheet);
+            lockBodyHeight(currentSheet);
+
+            if (orphanedHeading) {
+              currentSheetBody.appendChild(orphanedHeading);
+            }
+            currentSheetBody.appendChild(cloned);
           }
-
-          pageCount++;
-          currentSheet = this._createEmptySheet(pageCount, sheetWidthMm, sheetHeightMm, activeChapter, availableHeightPx, needHeader, needFooter);
-          currentSheetBody = currentSheet.querySelector('.sheet-body');
-          this.zoomWrapper.appendChild(currentSheet);
-          this.sheets.push(currentSheet);
-          lockBodyHeight(currentSheet);
-
-          if (orphanedHeading) {
-            currentSheetBody.appendChild(orphanedHeading);
-          }
-          currentSheetBody.appendChild(cloned);
         }
       }
 
@@ -4439,6 +5434,7 @@
         const tok = activeChapter.styleTokens;
         if (tok) {
           if (tok.brandColor) sheet.style.setProperty('--web-extracted-primary', tok.brandColor);
+          if (tok.paperBg) sheet.style.setProperty('--web-extracted-paper-bg', tok.paperBg);
           if (tok.lightBg) sheet.style.setProperty('--web-extracted-bg', tok.lightBg);
           if (tok.lightBorder) sheet.style.setProperty('--web-extracted-border', tok.lightBorder);
           if (tok.secondaryColor) sheet.style.setProperty('--web-extracted-secondary', tok.secondaryColor);
@@ -4447,6 +5443,8 @@
           if (tok.h2Color) sheet.style.setProperty('--web-h2-color', tok.h2Color);
           if (tok.h3Color) sheet.style.setProperty('--web-h3-color', tok.h3Color);
           if (tok.h4Color) sheet.style.setProperty('--web-h4-color', tok.h4Color);
+          if (tok.h1Weight) sheet.style.setProperty('--web-h1-weight', tok.h1Weight);
+          if (tok.h2Weight) sheet.style.setProperty('--web-h2-weight', tok.h2Weight);
           if (tok.pColor) sheet.style.setProperty('--web-p-color', tok.pColor);
           if (tok.bodyFont) {
             const fStack = tok.bodyFont.includes(',') ? tok.bodyFont : ContentExtractor._buildFontStack(tok.bodyFont);
@@ -4494,10 +5492,12 @@
       const body = document.createElement('div');
       body.className = 'sheet-body';
       body.setAttribute('data-columns', this.config.columns || 1);
-      if ((this.config.columns || 1) > 1 && availableHeightPx) {
-        body.style.height = availableHeightPx + 'px';
+      if (availableHeightPx) {
         body.style.maxHeight = availableHeightPx + 'px';
-        body.style.flex = `0 0 ${availableHeightPx}px`;
+        if ((this.config.columns || 1) > 1) {
+          body.style.height = availableHeightPx + 'px';
+          body.style.flex = `0 0 ${availableHeightPx}px`;
+        }
       }
       inner.appendChild(body);
 
@@ -6394,6 +7394,13 @@
       const brandInput = document.getElementById('input-brand-color');
       if (brandInput) brandInput.value = brandColor;
 
+      if (tokens.paperBg) {
+        setVar('--doc-paper-bg', tokens.paperBg);
+        setVar('--web-extracted-paper-bg', tokens.paperBg);
+      } else {
+        setVar('--doc-paper-bg', '#ffffff');
+        setVar('--web-extracted-paper-bg', '#ffffff');
+      }
       if (tokens.lightBg) {
         setVar('--doc-primary-light', tokens.lightBg);
         setVar('--web-extracted-bg', tokens.lightBg);
@@ -6414,6 +7421,8 @@
       setVar('--web-h3-color', h3Color);
       const h4Color = tokens.h4Color || tokens.h1Color || headingColor || brandColor;
       setVar('--web-h4-color', h4Color);
+      setVar('--web-h1-weight', tokens.h1Weight || '700');
+      setVar('--web-h2-weight', tokens.h2Weight || '700');
       setVar('--web-p-color', pColor);
 
       const fontStack = tokens.bodyFont?.includes(',') 
@@ -6440,6 +7449,7 @@
 
       document.body.setAttribute('data-theme', 'web-original');
       document.body.setAttribute('data-font', 'web-original');
+      document.body.setAttribute('data-web-dropcap', tokens.hasDropCap ? 'true' : 'false');
 
       const themeSelect = document.getElementById('sel-preset-template');
       if (themeSelect && !themeSelect.value.startsWith('web-chap-')) {
@@ -6507,10 +7517,10 @@
         '--doc-font-h4', '--doc-font-mono', '--doc-heading-scale', '--doc-letter-spacing',
         '--doc-line-height', '--doc-font-size-base', '--doc-heading-margin-top',
         '--doc-heading-margin-bottom', '--doc-paragraph-margin-bottom',
-        '--web-extracted-primary', '--web-extracted-heading', '--web-extracted-font',
+        '--web-extracted-primary', '--web-extracted-paper-bg', '--web-extracted-heading', '--web-extracted-font',
         '--web-extracted-heading-font', '--web-extracted-bg', '--web-extracted-border',
         '--web-extracted-secondary', '--web-extracted-text', '--web-h1-color',
-        '--web-h2-color', '--web-h3-color', '--web-h4-color', '--web-p-color'
+        '--web-h2-color', '--web-h3-color', '--web-h4-color', '--web-h1-weight', '--web-h2-weight', '--web-p-color'
       ];
       varsToClear.forEach(v => {
         document.documentElement.style.removeProperty(v);
@@ -7968,6 +8978,10 @@
   window.URLPrinterApp = URLPrinterApp;
 
   window.addEventListener('DOMContentLoaded', () => {
+    if (window.APP_VERSION) {
+      const badge = document.getElementById('app-version-badge');
+      if (badge) badge.textContent = 'v' + window.APP_VERSION;
+    }
     if (document.getElementById('app-main-layout')) {
       window.app = new URLPrinterApp();
     }
