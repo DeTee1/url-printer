@@ -579,9 +579,57 @@
       return u;
     }
 
-    static extractAndCreateQRCards(containerElement) {
-      const defaultBaseUrl = containerElement.querySelector('[data-chapter-url]')?.getAttribute('data-chapter-url') || '';
+    static _applyCardOverrides(card, blockId, config = {}) {
+      const globalSize = config.qrSize || document.body.getAttribute('data-qr-size') || 'medium';
+      const overrides = (config.qrCardOverrides && blockId) ? config.qrCardOverrides[blockId] : null;
+      if (overrides && overrides.deleted) {
+        return false;
+      }
 
+      const customSize = (overrides && overrides.qrSize)
+        ? overrides.qrSize
+        : (card.getAttribute('data-qr-custom') === 'true' ? card.getAttribute('data-qr-size') : '');
+
+      if (customSize) {
+        card.setAttribute('data-qr-size', customSize);
+        card.setAttribute('data-qr-custom', 'true');
+      } else {
+        card.setAttribute('data-qr-size', globalSize);
+        card.removeAttribute('data-qr-custom');
+      }
+
+      const scale = (overrides && overrides.scale)
+        ? parseInt(overrides.scale, 10)
+        : parseInt(card.getAttribute('data-scale') || '100', 10);
+      if (scale && scale > 0) {
+        card.setAttribute('data-scale', scale);
+        card.style.setProperty('--qr-scale', (scale / 100).toFixed(2));
+      }
+
+      if (overrides) {
+        if (overrides.align) {
+          card.setAttribute('data-align', overrides.align);
+          card.classList.remove('align-left', 'align-center', 'align-right', 'align-justify');
+          card.classList.add(`align-${overrides.align}`);
+        }
+        if (overrides.breakBefore !== undefined) {
+          if (overrides.breakBefore) card.setAttribute('data-break-before', 'true');
+          else card.removeAttribute('data-break-before');
+        }
+        if (overrides.color !== undefined) card.style.color = overrides.color;
+        if (overrides.fontSize !== undefined) card.style.fontSize = overrides.fontSize;
+        if (overrides.fontWeight !== undefined) card.style.fontWeight = overrides.fontWeight;
+        if (overrides.fontStyle !== undefined) card.style.fontStyle = overrides.fontStyle;
+        if (overrides.textDecoration !== undefined) card.style.textDecoration = overrides.textDecoration;
+      }
+      return true;
+    }
+
+    static extractAndCreateQRCards(containerElement, config = {}) {
+      const defaultBaseUrl = containerElement.querySelector('[data-chapter-url]')?.getAttribute('data-chapter-url') || '';
+      const defaultChapterId = containerElement.querySelector('[data-chapter-id]')?.getAttribute('data-chapter-id') || '';
+
+      let preIdx = 1;
       // 0. Refresh any pre-existing QR cards (e.g. from saved projects or video callouts) so their SVG is always valid
       containerElement.querySelectorAll('.doc-qr-card, .doc-qr-inline-card').forEach(card => {
         const wrapper = card.querySelector('.doc-qr-canvas-wrapper');
@@ -591,8 +639,14 @@
         if (wrapper && normUrl) {
           wrapper.innerHTML = this.generateSVG(normUrl, { margin: 2 });
         }
+        const blockId = card.getAttribute('data-block-id') || `blk_qr_pre_${preIdx++}`;
+        card.setAttribute('data-block-id', blockId);
+        if (!this._applyCardOverrides(card, blockId, config)) {
+          card.remove();
+        }
       });
 
+      let audioIdx = 1;
       // 1. Audio and Podcast elements -> QR Cards
       containerElement.querySelectorAll('audio, .audio-player, a[href$=".mp3"], a[href$=".wav"], a[href*="soundcloud.com"], a[href*="spotify.com"]').forEach(audioEl => {
         if (audioEl.closest('.doc-qr-card') || audioEl.closest('.doc-qr-inline-card')) return;
@@ -607,14 +661,25 @@
           audioTitle = audioEl.textContent.trim() || 'Zvuková ukázka';
         }
 
+        const chId = audioEl.getAttribute('data-chapter-id') || audioEl.closest('[data-chapter-id]')?.getAttribute('data-chapter-id') || defaultChapterId;
         const baseUrl = audioEl.closest('[data-chapter-url]')?.getAttribute('data-chapter-url') || defaultBaseUrl;
         const normAudioSrc = this._normalizeUrl(audioSrc, baseUrl);
 
         if (normAudioSrc) {
+          const blockId = `blk_qr_audio_${chId || 'doc'}_${audioIdx++}`;
           const card = document.createElement('div');
           card.className = 'doc-callout doc-qr-card doc-element';
           card.setAttribute('data-block-type', 'qr-card');
+          card.setAttribute('data-callout-type', 'qr');
           card.setAttribute('data-href', normAudioSrc);
+          card.setAttribute('data-block-id', blockId);
+          card.setAttribute('data-qr-short', '🎧 QR');
+          if (chId) card.setAttribute('data-chapter-id', chId);
+
+          if (!this._applyCardOverrides(card, blockId, config)) {
+            audioEl.remove();
+            return;
+          }
 
           const svg = this.generateSVG(normAudioSrc, { margin: 2 });
           card.innerHTML = `
@@ -629,6 +694,7 @@
         }
       });
 
+      let videoIdx = 1;
       // 2. Video Callouts -> inject or refresh QR Code
       containerElement.querySelectorAll('.doc-callout-video').forEach(videoCard => {
         const link = videoCard.querySelector('a[href]');
@@ -637,15 +703,24 @@
         const videoUrl = this._normalizeUrl(rawVideoUrl, baseUrl);
         if (!videoUrl) return;
 
+        const chId = videoCard.getAttribute('data-chapter-id') || defaultChapterId;
+        const blockId = videoCard.getAttribute('data-block-id') || `blk_qr_video_${chId || 'doc'}_${videoIdx++}`;
+        videoCard.setAttribute('data-block-id', blockId);
+        videoCard.setAttribute('data-qr-short', '🎬 QR');
+        if (!this._applyCardOverrides(videoCard, blockId, config)) {
+          videoCard.remove();
+          return;
+        }
+
         const existingWrapper = videoCard.querySelector('.doc-qr-canvas-wrapper');
         const svg = this.generateSVG(videoUrl, { margin: 2 });
         if (existingWrapper) {
+          existingWrapper.style.width = '';
+          existingWrapper.style.height = '';
           existingWrapper.innerHTML = svg;
         } else {
           const qrWrapper = document.createElement('div');
           qrWrapper.className = 'doc-qr-canvas-wrapper';
-          qrWrapper.style.width = '22mm';
-          qrWrapper.style.height = '22mm';
           qrWrapper.style.float = 'left';
           qrWrapper.style.margin = '0 12px 8px 0';
           qrWrapper.innerHTML = svg;
@@ -663,6 +738,7 @@
       const blocks = Array.from(containerElement.querySelectorAll('p, li, blockquote, div.doc-element, table, figure'));
       
       let linkCounter = 1;
+      let qrCardSeq = 1;
       const seenUrlsInDocument = new Map();
       const processedLinks = new WeakSet();
 
@@ -672,6 +748,7 @@
           return;
         }
 
+        const chId = block.getAttribute('data-chapter-id') || block.closest('[data-chapter-id]')?.getAttribute('data-chapter-id') || defaultChapterId;
         const baseUrl = block.getAttribute('data-chapter-url') || block.closest('[data-chapter-url]')?.getAttribute('data-chapter-url') || defaultBaseUrl;
 
         const linksInBlock = Array.from(block.querySelectorAll('a[href]')).filter(link => {
@@ -725,6 +802,8 @@
           const insertTarget = (block.tagName === 'LI' && block.parentElement) ? block.parentElement : block;
 
           blockLinks.forEach(item => {
+            const blockId = `blk_qr_link_${chId || 'doc'}_${qrCardSeq++}`;
+
             // Check if a card for this URL already immediately follows insertTarget
             let nextEl = insertTarget.nextElementSibling;
             while (nextEl && (nextEl.classList.contains('doc-qr-inline-card') || nextEl.classList.contains('doc-qr-card'))) {
@@ -732,6 +811,7 @@
               if (existingUrl === item.url) {
                 const wrap = nextEl.querySelector('.doc-qr-canvas-wrapper');
                 if (wrap) wrap.innerHTML = this.generateSVG(item.url, { margin: 2 });
+                this._applyCardOverrides(nextEl, nextEl.getAttribute('data-block-id') || blockId, config);
                 return;
               }
               nextEl = nextEl.nextElementSibling;
@@ -742,7 +822,13 @@
             card.setAttribute('data-block-type', 'callout');
             card.setAttribute('data-callout-type', 'qr');
             card.setAttribute('data-href', item.url);
-            card.setAttribute('data-block-id', 'blk_qr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4));
+            card.setAttribute('data-qr-short', `QR #${item.num}`);
+            card.setAttribute('data-block-id', blockId);
+            if (chId) card.setAttribute('data-chapter-id', chId);
+
+            if (!this._applyCardOverrides(card, blockId, config)) {
+              return;
+            }
 
             const svg = this.generateSVG(item.url, { margin: 2 });
             card.innerHTML = `
@@ -4896,6 +4982,8 @@
         pageNumFormat: 'prefix',
         showSourceInDoc: false,
         enableQRFootnotes: true,
+        qrSize: 'medium',
+        qrCardOverrides: {},
         hideLinks: false,
         enableAutoTOC: false,
         tocPosition: 'after-title',
@@ -4919,6 +5007,7 @@
       document.body.setAttribute('data-img-shadow', this.config.imgShadow);
       document.body.setAttribute('data-img-radius', this.config.imgRadius);
       document.body.setAttribute('data-img-bg', this.config.imgBg);
+      document.body.setAttribute('data-qr-size', this.config.qrSize || 'medium');
 
       if (this.config.hideLinks !== undefined) {
         document.body.setAttribute('data-hide-links', this.config.hideLinks ? 'true' : 'false');
@@ -5074,7 +5163,7 @@
       });
 
       if (this.config.enableQRFootnotes) {
-        QRGenerator.extractAndCreateQRCards(sandbox);
+        QRGenerator.extractAndCreateQRCards(sandbox, this.config);
       }
 
       let blockIdx = 0;
@@ -5620,10 +5709,11 @@
      6. OPTIMIZED BLOCK INSPECTOR (Full 200% Sizing & Grab-and-Drag Sliders)
      ========================================================================== */
   class BlockInspector {
-    constructor(panelElement, onBlockModified, onLiveUpdate) {
+    constructor(panelElement, onBlockModified, onLiveUpdate, onApplyAllQR) {
       this.panel = panelElement;
       this.onBlockModified = onBlockModified;
       this.onLiveUpdate = onLiveUpdate;
+      this.onApplyAllQR = onApplyAllQR;
       this.selectedElement = null;
       this.currentInspectedId = null;
     }
@@ -5681,7 +5771,8 @@
 
     renderInspector(el) {
       const tag = el.tagName.toLowerCase();
-      const isImg = tag === 'img' || tag === 'figure' || el.querySelector('img') !== null;
+      const isQR = el.classList.contains('doc-qr-card') || el.classList.contains('doc-qr-inline-card') || el.getAttribute('data-callout-type') === 'qr' || el.classList.contains('doc-callout-video');
+      const isImg = !isQR && (tag === 'img' || tag === 'figure' || el.querySelector('img') !== null);
       const isText = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'li', 'td', 'th', 'div'].includes(tag);
 
       const blockId = el.getAttribute('data-block-id') || '';
@@ -5692,6 +5783,7 @@
 
       let currentFontSize = parseInt(window.getComputedStyle(el).fontSize, 10) || 14;
       let currentScale = parseInt(el.getAttribute('data-scale') || '100', 10);
+      const currentQRSize = el.getAttribute('data-qr-size') || document.body.getAttribute('data-qr-size') || 'medium';
 
       const compStyle = window.getComputedStyle(el);
       const isBold = parseInt(compStyle.fontWeight, 10) >= 600 || compStyle.fontWeight === 'bold';
@@ -5776,6 +5868,39 @@
               <input type="number" id="insp-num-fontsize" min="8" max="48" value="${currentFontSize}">
             </div>
           </div>
+
+          ${isQR ? `
+          <div class="inspector-section-card" style="border-color: var(--pastel-blue-border); background: var(--pastel-blue-bg);">
+            <div class="inspector-sec-title" style="color: var(--pastel-blue-text);">${t('inspector.qr_adjust', '📱 QR Code Box Settings')}</div>
+            
+            <div class="control-group" style="margin-bottom: 8px;">
+              <label class="control-sublabel">${t('inspector.qr_variant', 'Box Size Variant')}</label>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 4px;">
+                <button class="btn btn-secondary ${currentQRSize === 'full' ? 'active' : ''}" id="insp-qr-size-full" style="padding: 5px 4px; font-size: 11px;">${t('inspector.qr_var_full', '📐 Full Width')}</button>
+                <button class="btn btn-secondary ${currentQRSize === 'medium' ? 'active' : ''}" id="insp-qr-size-medium" style="padding: 5px 4px; font-size: 11px;">${t('inspector.qr_var_medium', '📄 Column (Medium)')}</button>
+                <button class="btn btn-secondary ${currentQRSize === 'small' ? 'active' : ''}" id="insp-qr-size-small" style="padding: 5px 4px; font-size: 11px;">${t('inspector.qr_var_small', '🔹 Small (Compact)')}</button>
+                <button class="btn btn-secondary ${currentQRSize === 'minimal' ? 'active' : ''}" id="insp-qr-size-minimal" style="padding: 5px 4px; font-size: 11px;">${t('inspector.qr_var_minimal', '▫️ Minimal (QR Only)')}</button>
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label class="control-sublabel">${t('inspector.qr_scale', 'QR Code Scale (50% – 200%)')}</label>
+              <div class="slider-num-pair">
+                <input type="range" id="insp-qr-range-scale" min="50" max="200" value="${currentScale}">
+                <input type="number" id="insp-qr-num-scale" min="50" max="200" value="${currentScale}">
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 4px;">
+              <button class="btn btn-secondary" id="insp-qr-s75" style="padding: 4px; font-size: 11px;">75%</button>
+              <button class="btn btn-secondary" id="insp-qr-s100" style="padding: 4px; font-size: 11px;">100%</button>
+              <button class="btn btn-secondary" id="insp-qr-s125" style="padding: 4px; font-size: 11px;">125%</button>
+              <button class="btn btn-secondary" id="insp-qr-s150" style="padding: 4px; font-size: 11px;">150%</button>
+            </div>
+
+            <button class="btn btn-secondary" id="insp-qr-apply-all" style="width: 100%; margin-top: 8px; font-size: 11px;">${t('inspector.qr_apply_all', '🔄 Apply this variant to all QR codes')}</button>
+          </div>
+          ` : ''}
 
           ${isImg ? `
           <div class="inspector-section-card" style="border-color: var(--pastel-blue-border); background: var(--pastel-blue-bg);">
@@ -8980,7 +9105,34 @@
   window.addEventListener('DOMContentLoaded', () => {
     if (window.APP_VERSION) {
       const badge = document.getElementById('app-version-badge');
-      if (badge) badge.textContent = 'v' + window.APP_VERSION;
+      if (badge) {
+        badge.textContent = 'v' + window.APP_VERSION;
+        badge.addEventListener('click', async () => {
+          const modal = document.getElementById('modal-changelog');
+          const body = document.getElementById('modal-changelog-body');
+          if (!modal || !body) return;
+          modal.classList.add('open');
+          try {
+            const resp = await fetch('CHANGELOG.md');
+            if (resp.ok) {
+              const text = await resp.text();
+              // Jednoduché formátování markdownu do HTML pro čitelný náhled
+              let formatted = text
+                .replace(/^# (.*$)/gim, '<h2 style="margin-top:0; color:var(--ui-text-heading); font-size:18px;">$1</h2>')
+                .replace(/^## (.*$)/gim, '<h3 style="margin-top:16px; margin-bottom:6px; color:var(--pastel-blue-text); font-size:14px; border-bottom:1px solid var(--ui-border); padding-bottom:4px;">$1</h3>')
+                .replace(/^### (.*$)/gim, '<h4 style="margin-top:10px; margin-bottom:4px; color:var(--ui-text-heading); font-size:12px;">$1</h4>')
+                .replace(/^\- (.*$)/gim, '<li style="margin-left:18px; margin-bottom:3px;">$1</li>')
+                .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/gim, '<code style="background:var(--ui-surface-subtle); padding:1px 4px; border-radius:3px; font-family:monospace; font-size:11px;">$1</code>');
+              body.innerHTML = formatted;
+            } else {
+              body.innerHTML = '<div style="color:var(--ui-text-muted);">Soubor CHANGELOG.md nebyl nalezen. Můžete si prohlédnout <a href="https://github.com/DeTee1/url-printer/releases" target="_blank">Releases na GitHubu</a>.</div>';
+            }
+          } catch (e) {
+            body.innerHTML = '<div style="color:var(--ui-text-muted);">Náhled historie změn se nepodařilo načíst: ' + e.message + '</div>';
+          }
+        });
+      }
     }
     if (document.getElementById('app-main-layout')) {
       window.app = new URLPrinterApp();

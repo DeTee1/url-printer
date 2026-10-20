@@ -897,12 +897,14 @@ figure.doc-element figcaption {
 }
 
 .doc-callout-video {
-  border-color: #0284c7;
-  background: #f0f9ff;
-  color: #0369a1;
+  border-color: var(--doc-primary, #0284c7);
+  background: var(--doc-primary-light, #f0f9ff);
+  color: var(--doc-headings, #0369a1);
+  border-radius: var(--doc-img-radius, 6px);
+  box-shadow: var(--doc-img-shadow, none);
 }
 .doc-callout-video a {
-  color: #0284c7;
+  color: var(--doc-primary, #0284c7);
   text-decoration: underline;
   word-break: break-all;
   font-size: 8.5pt;
@@ -949,17 +951,24 @@ figure.doc-element figcaption {
   background-size: 5mm 5mm;
 }
 
-/* QR Code Card (Audio & Inline Link Cards) */
+/* QR Code Card (Audio & Inline Link Cards — Template-Aware + 4 Size Modes) */
 .doc-qr-card,
 .doc-qr-inline-card {
+  --qr-scale: 1;
+  --qr-box-dim: 20mm;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  margin: 0.6em 0 0.9em 0;
-  border: 1px solid var(--doc-primary-border, #bae6fd);
-  border-radius: 6px;
-  background: var(--doc-primary-light, #f8fafc);
+  gap: 10px;
+  padding: 7px 11px;
+  margin: 0.55em 0 0.75em 0;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--doc-font-family, sans-serif);
+  color: var(--doc-text, #1e293b);
+  border: 1pt solid var(--doc-primary-border, var(--doc-border, #cbd5e1));
+  border-radius: var(--doc-img-radius, 6px);
+  background: var(--doc-primary-light, var(--doc-callout-bg, #f8fafc));
+  box-shadow: var(--doc-img-shadow, none);
   page-break-inside: avoid;
   break-inside: avoid;
 }
@@ -970,15 +979,16 @@ figure.doc-element figcaption {
 
 .doc-qr-canvas-wrapper {
   flex-shrink: 0;
-  width: 22mm;
-  height: 22mm;
+  width: calc(var(--qr-box-dim, 20mm) * var(--qr-scale, 1));
+  height: calc(var(--qr-box-dim, 20mm) * var(--qr-scale, 1));
   background: #ffffff !important;
-  border: 1px solid var(--doc-border, #e2e8f0);
-  border-radius: 4px;
+  border: 1px solid var(--doc-primary-border, var(--doc-border, #e2e8f0));
+  border-radius: calc(var(--doc-img-radius, 4px) * 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 3px;
+  padding: 2.5px;
+  box-sizing: border-box;
 }
 
 .doc-qr-canvas-wrapper svg {
@@ -996,31 +1006,188 @@ figure.doc-element figcaption {
 
 .doc-qr-badge {
   display: inline-block;
-  font-size: 7pt;
+  font-family: var(--doc-font-heading, sans-serif);
+  font-size: 6.8pt;
   font-weight: 700;
+  letter-spacing: 0.3px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: calc(var(--doc-img-radius, 4px) * 0.4);
   background: var(--doc-primary, #0284c7);
   color: #ffffff;
   text-transform: uppercase;
   margin-bottom: 2px;
+  line-height: 1.3;
 }
 
 .doc-qr-title {
+  font-family: var(--doc-font-heading, sans-serif);
   font-size: 8.5pt;
   font-weight: 700;
   color: var(--doc-headings, #0f172a);
   margin-bottom: 2px;
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.doc-qr-url {
-  font-size: 7.5pt;
+.doc-qr-url,
+.doc-qr-url a {
+  font-size: 7.2pt;
   color: var(--doc-text-muted, #64748b);
   font-family: var(--doc-font-mono, monospace);
   word-break: break-all;
+  text-decoration: none;
+  line-height: 1.25;
+}
+
+.doc-qr-url a:hover {
+  color: var(--doc-primary, #0284c7);
+  text-decoration: underline;
+}
+
+/* --------------------------------------------------------------------------
+   QR BOX SIZE VARIANTS:
+   1. full    — Plná (na šířku strany / column-span: all)
+   2. medium  — Střední (šířka sloupce / výchozí)
+   3. small   — Malá (úsporná velikost)
+   4. minimal — Minimální (pouze QR kód)
+   -------------------------------------------------------------------------- */
+
+/* 1. PLNÁ (Full Page Width — spans across all columns in multi-column templates) */
+body[data-qr-size="full"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]),
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="full"],
+.doc-callout-video[data-qr-size="full"] {
+  --qr-box-dim: 25mm;
+  column-span: all;
+  width: 100%;
+  padding: 10px 14px;
+  gap: 14px;
+  margin: 0.75em 0;
+}
+
+body[data-qr-size="full"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-title,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="full"] .doc-qr-title {
+  font-size: 9.5pt;
+  white-space: normal;
+}
+
+body[data-qr-size="full"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-url,
+body[data-qr-size="full"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-url a,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="full"] .doc-qr-url,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="full"] .doc-qr-url a {
+  font-size: 8pt;
+}
+
+/* 2. STŘEDNÍ (Medium — Column Width) */
+body[data-qr-size="medium"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]),
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="medium"],
+.doc-callout-video[data-qr-size="medium"] {
+  --qr-box-dim: 20mm;
+  column-span: none;
+  width: 100%;
+  padding: 7px 11px;
+  gap: 10px;
+}
+
+/* 3. MALÁ (Small — Space-Saving Compact Card) */
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]),
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"],
+.doc-callout-video[data-qr-size="small"] {
+  --qr-box-dim: 13.5mm;
+  column-span: none;
+  width: 100%;
+  padding: 4px 8px;
+  gap: 8px;
+  margin: 0.3em 0 0.45em 0;
+  border-left-width: 2.5pt;
+}
+
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-canvas-wrapper,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"] .doc-qr-canvas-wrapper {
+  padding: 1.5px;
+}
+
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-badge,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"] .doc-qr-badge {
+  font-size: 5.8pt;
+  padding: 0.5px 4px;
+  margin-bottom: 1px;
+}
+
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-title,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"] .doc-qr-title {
+  font-size: 7.5pt;
+  margin-bottom: 1px;
+  line-height: 1.15;
+}
+
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-url,
+body[data-qr-size="small"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-url a,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"] .doc-qr-url,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="small"] .doc-qr-url a {
+  font-size: 6.2pt;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* 4. MINIMÁLNÍ (Minimal — QR Code Only) */
+body[data-qr-size="minimal"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]),
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="minimal"],
+.doc-callout-video[data-qr-size="minimal"] {
+  --qr-box-dim: 15mm;
+  column-span: none;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: auto !important;
+  max-width: fit-content;
+  padding: 3px;
+  gap: 2px;
+  margin: 0.25em 6px 0.35em 0;
+  vertical-align: middle;
+  border-left-width: 1pt;
+}
+
+body[data-qr-size="minimal"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-canvas-wrapper,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="minimal"] .doc-qr-canvas-wrapper {
+  border: none;
+  padding: 1px;
+}
+
+body[data-qr-size="minimal"] :is(.doc-qr-card, .doc-qr-inline-card):not([data-qr-size]) .doc-qr-info,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="minimal"] .doc-qr-info,
+.doc-callout-video[data-qr-size="minimal"] .doc-callout-header,
+.doc-callout-video[data-qr-size="minimal"] p,
+.doc-callout-video[data-qr-size="minimal"] span,
+.doc-callout-video[data-qr-size="minimal"] img {
+  display: none !important;
+}
+
+/* Show tiny #N reference label on minimal QR card if data-qr-short is present */
+body[data-qr-size="minimal"] :is(.doc-qr-card, .doc-qr-inline-card)[data-qr-short]:not([data-qr-size])::after,
+:is(.doc-qr-card, .doc-qr-inline-card)[data-qr-size="minimal"][data-qr-short]::after {
+  content: attr(data-qr-short);
+  font-family: var(--doc-font-mono, monospace);
+  font-size: 5.5pt;
+  font-weight: 700;
+  color: var(--doc-headings, #0f172a);
+  line-height: 1;
+  letter-spacing: 0.2px;
+}
+
+/* Alignment support for minimal / scaled QR boxes */
+:is(.doc-qr-card, .doc-qr-inline-card).align-center {
+  margin-left: auto;
+  margin-right: auto;
+}
+:is(.doc-qr-card, .doc-qr-inline-card).align-right {
+  margin-left: auto;
+  margin-right: 0;
 }
 
 /* QR Code Appendix / Footnotes Grid */

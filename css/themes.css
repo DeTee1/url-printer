@@ -2128,3 +2128,69 @@ body[data-theme="toner-saver"] .doc-callout {
   border-color: #000000 !important;
   color: #000000 !important;
 }
+
+/* ==========================================================================
+   TEMPLATE-AWARE QR CODE CARD STYLING BY ARCHETYPE
+   ========================================================================== */
+
+/* 1. Vintage Newspapers: Double rules, sharp corners, press badge */
+body[data-theme="vintage-broadsheet"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="gazette-1920"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="yellowed-press"] :is(.doc-qr-card, .doc-qr-inline-card) {
+  border-radius: 0 !important;
+  border-top: 1.5pt double var(--doc-primary);
+  border-bottom: 1.5pt double var(--doc-primary);
+  border-left: 2pt solid var(--doc-primary);
+  border-right: 0.75pt solid var(--doc-border);
+  background: var(--doc-primary-light);
+}
+
+/* 2. Antique & Literary Books: Understated bookplate frame & hollow badge */
+body[data-theme="antique-manuscript"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="antique-victorian"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="antique-press"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="book-modern-novel"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="book-nordic-minimal"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="book-paperback"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="minimal-zen"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="academic"] :is(.doc-qr-card, .doc-qr-inline-card) {
+  border-radius: 0 !important;
+  background: var(--doc-paper-bg, #ffffff);
+  border: 0.75pt solid var(--doc-border);
+  border-left: 2.5pt solid var(--doc-primary);
+}
+
+body[data-theme="antique-victorian"] .doc-qr-badge,
+body[data-theme="antique-press"] .doc-qr-badge,
+body[data-theme="book-modern-novel"] .doc-qr-badge,
+body[data-theme="minimal-zen"] .doc-qr-badge,
+body[data-theme="academic"] .doc-qr-badge {
+  background: transparent;
+  color: var(--doc-primary);
+  border: 0.75pt solid var(--doc-primary);
+  padding: 0.5px 5px;
+}
+
+/* 3. Brutalist & Comic: Bold outline & hard offset shadow */
+body[data-theme="design-brutalist-tech"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="kids-comic"] :is(.doc-qr-card, .doc-qr-inline-card) {
+  border: 2pt solid #000000 !important;
+  box-shadow: 3pt 3pt 0 var(--doc-primary, #000000) !important;
+}
+
+/* 4. Swiss Grid & Bauhaus: Geometric construction rules */
+body[data-theme="design-swiss-grid"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="minimal-bauhaus"] :is(.doc-qr-card, .doc-qr-inline-card),
+body[data-theme="minimal-grid"] :is(.doc-qr-card, .doc-qr-inline-card) {
+  border-radius: 0 !important;
+  border: 1pt solid var(--doc-headings);
+  border-left: 4pt solid var(--doc-primary);
+}
+
+/* 5. Toner Saver: Pure black & white outline, zero solid fill */
+body[data-media-mode="toner-save"] .doc-qr-badge,
+body[data-theme="toner-saver"] .doc-qr-badge {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border: 1pt solid #000000 !important;
+}
