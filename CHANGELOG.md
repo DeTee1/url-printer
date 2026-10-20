@@ -1,16 +1,17 @@
-﻿# 📋 Seznam změn (Changelog) — URL Printer Studio
+# 📋 Seznam změn (Changelog) — URL Printer Studio
 
 Tento soubor eviduje historii změn, oprav a novinek pro jednotlivé verze aplikace URL Printer Studio.
 
 ---
 
-## [v0.1.13] â€” 20.10.2026
+## [v0.1.13] — 20.10.2026
 
-### đź“ť ZmÄ›ny a Ăşpravy
-- Pridani CHANGELOG.md, dialogu historie zmen primo do UI a automatickeho logovani zmen do GitHub Releases
-- Dotcene soubory: `css/app.css`, `css/print-engine.css`, `css/themes.css`, `index.html`, `js/app.js`, `js/i18n.js`, `scripts/backup.ps1`, `CHANGELOG.md`
+### 📝 Změny a úpravy
+- Přidání souboru `CHANGELOG.md`, interaktivního dialogu historie změn přímo do horní lišty UI a automatického logování změn do GitHub Releases.
+- Dotčené soubory: `css/app.css`, `css/print-engine.css`, `css/themes.css`, `index.html`, `js/app.js`, `js/i18n.js`, `scripts/backup.ps1`, `CHANGELOG.md`
 
 ---
+
 ## [v0.1.12] — 20.10.2026
 
 ### 🚀 Nové funkce & vylepšení

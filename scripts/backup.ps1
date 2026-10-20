@@ -8,6 +8,11 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 Set-Location $projectRoot
 
+# Ensure UTF-8 console output and encoding across environments
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # Ensure Git is in PATH
 $minGitPath = "$env:LOCALAPPDATA\MinGit\cmd"
 if (Test-Path "$minGitPath\git.exe") {
